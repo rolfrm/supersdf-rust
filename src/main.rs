@@ -201,14 +201,24 @@ fn main() {
     let out = interpolate2(a, b, c, c1, c2, c3, test);
     println!("out: {}", out);
     //return;
-    let sdf = DistanceFieldEnum::Empty{}.Insert2(
-        Sphere::new(Vec3f::new(-2.0,0.0,0.0), 2.0).color(Rgba([255,0,0,255])))
+
+    let aabb2 = Aabb::new(Vec3f::new(2.0,0.0,0.0), Vec3f::new(1.0, 1.0, 1.5))
+       .color(Rgba([255,255,255,255]));
+    let grad = Gradient::new(Vec3f::new(1.0,0.0,0.0), Vec3f::new(3.0,0.0,0.0)
+    , Rgba([255,0,0,255]), Rgba([255,255,255,255]), Rc::new(aabb2.into()));
+    let sphere = Sphere::new(Vec3f::new(-2.0,0.0,0.0), 2.0);
+    let grad2 = Gradient::new(Vec3f::new(0.0,-2.0,0.0), Vec3f::new(0.0,2.0,0.0)
+    , Rgba([255,255,255,255]), Rgba([0,0,255,255]), Rc::new(sphere.into()));
+    
+
+    let sdf = DistanceFieldEnum::Empty{}.Insert2(grad2) 
+        //.Insert2(Sphere::new(Vec3f::new(2.0,0.0,0.0), 2.0).color(Rgba([0, 255,0,255])))
+        //.Insert2(Sphere::new(Vec3f::new(0.0,2.0,0.0), 2.0).color(Rgba([255, 255,0,255])))
+        //.Insert2(Sphere::new(Vec3f::new(0.0,-2.0,0.0), 2.0).color(Rgba([255, 255,255,255])))
+        //.Insert2(Sphere::new(Vec3f::new(0.0,0.0,2.0), 2.0).color(Rgba([255, 0,255,255])))
+        //.Insert2(Sphere::new(Vec3f::new(0.0,0.0,-2.0), 2.0).color(Rgba([0, 0,255,255])))
         
-        .Insert2(Sphere::new(Vec3f::new(2.0,0.0,0.0), 2.0).color(Rgba([0, 255,0,255])))
-        .Insert2(Sphere::new(Vec3f::new(0.0,2.0,0.0), 2.0).color(Rgba([255, 255,0,255])))
-        .Insert2(Sphere::new(Vec3f::new(0.0,-2.0,0.0), 2.0).color(Rgba([255, 255,255,255])))
-        .Insert2(Sphere::new(Vec3f::new(0.0,0.0,2.0), 2.0).color(Rgba([255, 0,255,255])))
-        .Insert2(Sphere::new(Vec3f::new(0.0,0.0,-2.0), 2.0).color(Rgba([0, 0,255,255])))
+        .Insert2(grad)
         ;
 
     let d = sdf.distance(Vec3f::new(6.5, 5.0, 0.0));
@@ -231,7 +241,7 @@ fn main() {
 
     let mut window = Window::new("Kiss3d: wasm example");
 
-    let mut meshtex = r.to_mesh(&sdf2);
+    let mut meshtex = r.to_mesh(&sdf);
     let mut mesh = meshtex.0;
     let tex = meshtex.1;
     tex.save("test.png");

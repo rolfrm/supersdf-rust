@@ -1,14 +1,18 @@
 
 use image::Rgba;
-use kiss3d::nalgebra::{Vector3};
+use kiss3d::nalgebra::{Vector3, Normed};
 use std::rc::Rc;
+
+use crate::vec3;
 type Vec3f = Vector3<f32>;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum DistanceFieldEnum{
     Sphere(Sphere),
+    Aabb(Aabb),
     Add(Add),
     BoundsAdd(Add, Sphere),
+    Gradient(Gradient),
     Empty
 }
 
@@ -51,6 +55,75 @@ impl Into<DistanceFieldEnum> for Sphere {
         DistanceFieldEnum::Sphere(self)
     }
 }
+
+fn vec3_max(a :vec3, b : vec3) -> vec3 {
+    vec3::new(f32::max(a.x, b.x), f32::max(a.y, b.y), f32::max(a.z, b.z))
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Aabb {
+    radius : vec3,
+    center : vec3,
+    color : Rgba<u8>
+}
+
+impl Aabb {
+
+    pub fn new(center : vec3, radius: vec3)-> Aabb{
+        Aabb { radius: radius, center: center, color: Rgba([0,0,0,0]) }
+    }
+
+    pub fn distance(&self,  p : Vec3f) -> f32{
+        let p2 = p - self.center;
+        let q = p2.abs() - self.radius;
+        return vec3_max(q,vec3::zeros()).norm()
+           + f32::min(f32::max(q.x, f32::max(q.y, q.z)), 0.0);
+    }
+    
+    pub fn color(&self, color : Rgba<u8>) -> Aabb {
+        Aabb { radius: self.radius, center: self.center, color: color }
+    }
+}
+
+impl Into<DistanceFieldEnum> for Aabb{
+    fn into(self) -> DistanceFieldEnum {
+        DistanceFieldEnum::Aabb(self)
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Gradient {
+    p1 : vec3,
+    p2 : vec3,
+    c1 : Rgba<u8>,
+    c2 : Rgba<u8>,
+    inner : Rc<DistanceFieldEnum>
+}
+
+impl Gradient {
+
+    pub fn new(p1 : vec3, p2 : vec3, c1: Rgba<u8>, c2: Rgba<u8>, inner: Rc<DistanceFieldEnum>)-> Gradient{
+        Gradient {p1 : p1, p2 : p2, c1: c1, c2: c2, inner: inner }
+    }
+    
+    pub fn color(&self, p : vec3) -> Rgba<u8> {
+        
+        let pt2 = p - self.p1;
+        let l2 = (self.p1 - self.p2).norm_squared();
+            
+        let f = (self.p2 - self.p1).dot(&pt2) / l2;
+        println!("{}", f);
+        return rgba_interp(self.c1, self.c2, f);
+          
+    }
+}
+
+impl Into<DistanceFieldEnum> for Gradient{
+    fn into(self) -> DistanceFieldEnum {
+        DistanceFieldEnum::Gradient(self)
+    }
+}
+
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Add{
@@ -105,7 +178,9 @@ impl DistanceField for DistanceFieldEnum{
         match self {
             DistanceFieldEnum::Add(add) => add.distance(pos),
             DistanceFieldEnum::Sphere(sphere) => sphere.distance(pos),
+            DistanceFieldEnum::Aabb(aabb) => aabb.distance(pos),
             DistanceFieldEnum::Empty => f32::INFINITY,
+            DistanceFieldEnum::Gradient(gradient) => gradient.inner.distance(pos),
             DistanceFieldEnum::BoundsAdd(add, bounds ) => {
                 let d1 = bounds.distance(pos);
                 if d1 > bounds.radius * 0.5 {
@@ -138,8 +213,10 @@ impl DistanceFieldEnum{
     pub fn CalculateSphereBounds(&self) -> Sphere {
         match self {
             DistanceFieldEnum::Sphere(sphere) => sphere.clone(),
+            DistanceFieldEnum::Aabb(aabb) => Sphere::new(aabb.center, aabb.radius.norm()),
             DistanceFieldEnum::BoundsAdd(_, sphere ) => sphere.clone(),
             DistanceFieldEnum::Empty => Sphere::new(Vec3f::zeros(), f32::INFINITY),
+            DistanceFieldEnum::Gradient(gradient) => gradient.inner.CalculateSphereBounds(),
             DistanceFieldEnum::Add(add) => {
                 let left = add.left.CalculateSphereBounds();
                 let right = add.right.CalculateSphereBounds();
@@ -172,6 +249,7 @@ impl DistanceFieldEnum{
         match self {
             DistanceFieldEnum::Add(add) => add.distance_color(pos),
             DistanceFieldEnum::Sphere(sphere) => (sphere.distance(pos), sphere.color),
+            DistanceFieldEnum::Aabb(aabb) => (aabb.distance(pos), aabb.color),
             DistanceFieldEnum::Empty => (f32::INFINITY, Rgba([0,0,0,0])),
             DistanceFieldEnum::BoundsAdd(add, bounds ) => {
                 let d1 = bounds.distance(pos);
@@ -179,7 +257,8 @@ impl DistanceFieldEnum{
                     return (d1, Rgba([0,0,0,0]))
                 }
                 add.distance_color(pos)
-            }
+            },
+            DistanceFieldEnum::Gradient(gradient) => (gradient.inner.distance(pos), gradient.color(pos))
         }
     }
 
