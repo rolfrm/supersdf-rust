@@ -2,7 +2,7 @@
 <html lang="en">
 	<head>
 		<meta charset="utf-8">
-		<title>kiss3d • WASM demo</title>
+		<title>Super SDF WASM v1</title>
 		<style>
 			html, body, canvas {
 				margin: 0px;
@@ -18,7 +18,7 @@
 		<canvas oncontextmenu="return false;" id="canvas"></canvas>
 		<canvas id="canvas"></canvas>
         <script type="module">
-            import init, {add, main} from '/pkg/supersdf.js';
+            import init, {add, main} from './pkg/supersdf.js';
             async function run(){
 				await init()
 				let result = add(1,2);

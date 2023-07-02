@@ -80,6 +80,7 @@ impl VertexesList{
         let mut faces = Vec::new();
         let mut uvs = Vec::new();
         let mut face : OPoint<u16, Const<3>> = Point3::new(0, 0, 0);
+        let mut normals = Vec::new();
         let mut faceit = 0;
         let mut it = 0;
         let ntriangles :i64 = (self.verts.len() / 3) as i64;
@@ -88,19 +89,22 @@ impl VertexesList{
         let fw = 1.0 / (columns as f64);
         let fh = 1.0 / (rows as f64);
 
-        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(256, 256);
+        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(512, 512);
         let bufsize = Vec2::new(buf.width() as f32, buf.height() as f32);
 
-
+        let margin = 0.1;
         for v in &self.verts {
             let facei: i64 = faces.len() as i64;
             let row = (facei / columns) as f64;
             let col = (facei % columns) as f64;
             let rowf = row / (columns as f64);
             let colf = col / (columns as f64);
+            let normal = df.gradient(*v, 0.001);
+            normals.push(normal);
+            
             let uv 
-                = Point2::new((colf + fw * (match faceit == 1 { false => 0.2, true => 0.80})) as f32 
-                     , (rowf + fh * (match faceit == 2 { false => 0.2, true => 0.80})) as f32);
+                = Point2::new((colf + fw * (match faceit == 1 { false => margin, true => 1.0 - margin})) as f32 
+                     , (rowf + fh * (match faceit == 2 { false => margin, true => 1.0 - margin})) as f32);
             coords.push(v.clone().into());
             uvs.push(uv);
             face[faceit] = it;
@@ -120,18 +124,16 @@ impl VertexesList{
                 let vc = coords[coords.len() - 1].to_homogeneous().xyz();
 
                 let pa = uva * bufsize.x;
-                let pb = (uvb * bufsize.x);
-                let pc = (uvc * bufsize.x);
+                let pb = uvb * bufsize.x;
+                let pc = uvc * bufsize.x;
                 
-                for x in (f32::max(0.0, pa.x - 1.0) as u32) .. u32::min(buf.width() - 1, (pb.x.ceil() as u32 + 1)) {
-                    for y in (f32::max(0.0, pa.y - 1.0) as u32 ) .. u32::min(buf.height() - 1, pc.y.ceil() as u32 + 1) {
+                for x in (f32::max(0.0, pa.x - 1.0) as u32) .. u32::min(buf.width() - 1, (pb.x.ceil() as u32)) {
+                    for y in (f32::max(0.0, pa.y - 1.0) as u32 ) .. u32::min(buf.height() - 1, pc.y.ceil() as u32) {
                         let p0 = Vec2::new(x as f32, y as f32);
                         let v0 = interpolate2(pa, pb, pc, va, vb, vc, p0);
-                        //let xx = Vec3f::new(va.x, va.y, va.z) * (1.0 - fx) + Vec3f::new(vb.x, vb.y, vb.z) * fx;
+                        
                         let dc = df.distance_color(v0);
                         buf.put_pixel(x,y, dc.1);
-                        
-                        
                     }
                         
                 }
@@ -141,7 +143,7 @@ impl VertexesList{
         let image = DynamicImage::ImageRgba8(buf);
         
 
-        return (Mesh::new(coords, faces, Option::None, Option::Some(uvs), false), image);
+        return (Mesh::new(coords, faces, Option::Some(normals), Option::Some(uvs), false), image);
     }
 }
 

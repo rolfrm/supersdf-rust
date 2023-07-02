@@ -257,4 +257,32 @@ impl DistanceFieldEnum{
         }
     }
 
+    pub fn gradient(&self, pos: Vec3f, size: f32) -> Vec3f {
+        
+            let mut ptx = pos;
+            let mut pty = pos;
+            let mut ptz = pos;
+            ptx.x += size * 0.2;
+            pty.y += size * 0.2;
+            ptz.z += size * 0.2;
+            let dx1 = self.distance(ptx);
+            let dy1 = self.distance(pty);
+            let dz1 = self.distance(ptz);
+          
+            ptx.x -= size * 0.2 * 2.0;
+            pty.y -= size * 0.2 * 2.0;
+            ptz.z -= size * 0.2 * 2.0;
+            let dx2 = self.distance(ptx);
+            let dy2 = self.distance(pty);
+            let dz2 = self.distance(ptz);
+            let dv =  Vec3::new(dx1 - dx2, dy1 - dy2, dz1 - dz2);
+            let l = dv.norm();
+            if f32::abs(l) < 0.00001 {
+              return Vec3::zeros();
+            }
+            let x = dv  / l;
+            return x;
+          }
+    
+
 }

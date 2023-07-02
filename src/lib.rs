@@ -89,8 +89,6 @@ pub fn main() -> Result<(), JsValue> {
     tex.save("test.png");
     let uvs = mesh.uvs();
     
-    //println!("UVS: {:?}", uvs.read().unwrap().data().borrow());
-    mesh.recompute_normals();
     let mut c = window.add_mesh(Rc::new(RefCell::new(mesh)), Vec3f::new(0.2, 0.2, 0.2));//window.add_cube(0.5, 0.5, 0.5);
     let mut tm = TextureManager::new();
     

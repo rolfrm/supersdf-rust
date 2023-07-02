@@ -4,7 +4,7 @@ mod sdf_mesh;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use kiss3d::resource::{TextureManager};
+use kiss3d::resource::{TextureManager, MaterialManager, Material};
 use sdf::*;
 use sdf_mesh::*;
 
@@ -31,12 +31,12 @@ impl State for AppState {
 }
 
 fn main() {
-    let aabb2 = Aabb::new(Vec3f::new(1.0,0.0,0.0), Vec3f::new(1.0, 1.0, 1.5))
+    let aabb2 = Aabb::new(Vec3f::new(2.0,0.0,0.0), Vec3f::new(1.0, 1.0, 1.5))
        .color(Rgba([255,255,255,255]));
     let grad = Gradient::new(Vec3f::new(1.0,0.0,0.0), Vec3f::new(3.0,0.0,0.0)
     , Rgba([255,0,0,255]), Rgba([255,255,255,255]), Rc::new(aabb2.into()));
-    let sphere = Sphere::new(Vec3f::new(-1.0,0.0,0.0), 2.0);
-    let grad2 = Gradient::new(Vec3f::new(0.0,-2.0,0.0), Vec3f::new(0.0,2.0,0.0)
+    let sphere = Sphere::new(Vec3f::new(-2.0,0.0,0.0), 2.0);
+    let grad2 = Gradient::new(Vec3f::new(0.0,-0.2,0.0), Vec3f::new(0.0,0.2,0.0)
     , Rgba([255,255,255,255]), Rgba([0,0,255,255]), Rc::new(sphere.into()));
     
 
@@ -55,45 +55,34 @@ fn main() {
 
     let sdf2 = sdf.optimize_bounds();
     let d2 = sdf2.distance(Vec3f::new(6.5, 5.0, 0.0));
+    
 
     println!("distance: {}", d2);
     println!("{:?} \n\n {:?}", sdf, sdf2);
 
     let mut r = VertexesList::new();
-    //println!("Cube:!\n");
-    //process_cube(&sdf, Vec3f::new(1.0, 0.0, 0.0), 0.2, &mut r );
-
-    marching_cubes_sdf(&mut r, &sdf2, Vec3f::zeros(), 5.0, 0.25);
-    //println!("{:?}", r.verts);
-
-
-
+    
+    marching_cubes_sdf(&mut r, &sdf2, Vec3f::zeros(), 5.0, 0.2);
+    
     let mut window = Window::new("Kiss3d: wasm example");
 
-    let mut meshtex = r.to_mesh(&sdf);
+    let meshtex = r.to_mesh(&sdf);
     let mut mesh = meshtex.0;
     let tex = meshtex.1;
     tex.save("test.png");
-    let uvs = mesh.uvs();
     
-    //println!("UVS: {:?}", uvs.read().unwrap().data().borrow());
-    mesh.recompute_normals();
     let mut c = window.add_mesh(Rc::new(RefCell::new(mesh)), Vec3f::new(0.2, 0.2, 0.2));//window.add_cube(0.5, 0.5, 0.5);
     let mut tm = TextureManager::new();
-    
-    //let mut c = window.add_cube(1.0, 1.0, 1.0);
-    //c.add_cube(1.0, 1.0, 1.0).append_translation(&Translation3::new(2.0, 0.0, 0.0));
-    c.set_color(1.0, 1.0, 1.0);
+
     c.append_translation(&Translation3::new(0.0, 0.0, 1.0));
-    //c.set_texture_from_memory(&tex, "hello");
+    
     let mut tex2 = tm.add_image(tex, "Hello");
     c.set_texture(tex2);
     
 
     c.enable_backface_culling(true);
+    window.set_light(Light::StickToCamera);
     
-    window.set_light(Light::Absolute(Point3::new(0.0,0.0,0.0)));
-
     let rot = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.005);
     let state = AppState { c, rot };
 
