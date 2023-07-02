@@ -1445,7 +1445,10 @@ name = "supersdf"
 version = "0.1.0"
 dependencies = [
  "image",
+ "js-sys",
  "kiss3d",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

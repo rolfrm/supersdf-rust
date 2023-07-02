@@ -1,3 +1,4 @@
+
 pub mod mc;
 mod sdf;
 mod sdf_mesh;
@@ -13,7 +14,11 @@ use kiss3d::scene::SceneNode;
 
 use kiss3d::window::{State, Window};
 use kiss3d::nalgebra::{UnitQuaternion, Vector3, Point3, Translation3, Vector2};
+
 use image::{Rgba};
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
 
 type Vec3f = Vector3<f32>;
 type Vec3 = Vec3f;
@@ -30,7 +35,15 @@ impl State for AppState {
     }
 }
 
-fn main() {
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn add(a: u32, b: u32) -> u32 {
+    a + b
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn main() -> Result<(), JsValue> {
     let aabb2 = Aabb::new(Vec3f::new(2.0,0.0,0.0), Vec3f::new(1.0, 1.0, 1.5))
        .color(Rgba([255,255,255,255]));
     let grad = Gradient::new(Vec3f::new(1.0,0.0,0.0), Vec3f::new(3.0,0.0,0.0)
@@ -98,4 +111,5 @@ fn main() {
     let state = AppState { c, rot };
 
     window.render_loop(state);
+    Ok(())
 }

@@ -1,10 +1,10 @@
 
-use kiss3d::nalgebra::{UnitQuaternion, Vector3};
+use kiss3d::nalgebra::Vector3;
 use crate::sdf;
 
-type vec3 = Vector3<f32>;
+type Vec3 = Vector3<f32>;
 pub trait MarchingCubesReciever{
-  fn Receive(&mut self, v1 : vec3, v2: vec3, v3: vec3);
+  fn Receive(&mut self, v1 : Vec3, v2: Vec3, v3: Vec3);
 }
 
 // https://github.com/zhangxiaoxuan1/tsdfprocessor/blob/master/marching_cubes.cpp
@@ -296,7 +296,7 @@ static triTable: [[i32; 16] ;256] = [
     [0, 3, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
     [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]];
 
-fn VertexInterp(isolevel : f32, p1 : &vec3,  p2 : &vec3, valp1 : f32, valp2 : f32) ->vec3 {
+fn VertexInterp(isolevel : f32, p1 : &Vec3,  p2 : &Vec3, valp1 : f32, valp2 : f32) ->Vec3 {
  
 
   if f32::abs(isolevel - valp1) < 0.00001 {
@@ -309,11 +309,11 @@ fn VertexInterp(isolevel : f32, p1 : &vec3,  p2 : &vec3, valp1 : f32, valp2 : f3
     return *p1;
   }
   let mu = (isolevel - valp1) / (valp2 - valp1);
-  return vec3::new(p1.x + mu * (p2.x - p1.x), p1.y + mu * (p2.y - p1.y), p1.z + mu * (p2.z - p1.z))
+  return Vec3::new(p1.x + mu * (p2.x - p1.x), p1.y + mu * (p2.y - p1.y), p1.z + mu * (p2.z - p1.z))
 
 }
 
- pub fn process_cube<T : sdf::DistanceField, T2: MarchingCubesReciever>(model : &T, pt : vec3, size : f32,
+ pub fn process_cube<T : sdf::DistanceField, T2: MarchingCubesReciever>(model : &T, pt : Vec3, size : f32,
                  f : &mut T2) -> i32 {
   
   let mut cubeindex = 0;
@@ -323,12 +323,12 @@ fn VertexInterp(isolevel : f32, p1 : &vec3,  p2 : &vec3, valp1 : f32, valp2 : f3
   let s2 = size * 0.5;
   let o: [f32; 2] = [s2, -s2];
 
-  let mut points :[vec3; 8] = [vec3::zeros(); 8];
+  let mut points :[Vec3; 8] = [Vec3::zeros(); 8];
   let mut ds: [f32; 8] = [0.0; 8];
   let intorder : [usize; 8] = [0, 1, 3, 2, 4, 5, 7, 6];
   for i in 0..8 {
     let i2 = intorder[i];
-    let offset = vec3::new(o[i & 1], o[(i >> 1) & 1], o[(i >> 2) & 1]);
+    let offset = Vec3::new(o[i & 1], o[(i >> 1) & 1], o[(i >> 2) & 1]);
     let offset2 = offset * 2.0;
     let cell_index = 1 << i2;
     let p2 = offset2 + pt;
@@ -345,7 +345,7 @@ fn VertexInterp(isolevel : f32, p1 : &vec3,  p2 : &vec3, valp1 : f32, valp2 : f3
   if edgeTable[cubeindex] == 0 {
     return 0;
   }
-  let mut vertlist :[vec3; 12] = [vec3::zeros();12];
+  let mut vertlist :[Vec3; 12] = [Vec3::zeros();12];
 
   // Find the points where the surface intersects the cube
   if (edgeTable[cubeindex] & 1) != 0 {

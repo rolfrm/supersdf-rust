@@ -1,9 +1,9 @@
 
 use image::Rgba;
-use kiss3d::nalgebra::{Vector3, Normed};
+use kiss3d::nalgebra::{Vector3};
 use std::rc::Rc;
 
-use crate::vec3;
+use crate::Vec3;
 type Vec3f = Vector3<f32>;
 
 #[derive(Clone, PartialEq, Debug)]
@@ -56,27 +56,27 @@ impl Into<DistanceFieldEnum> for Sphere {
     }
 }
 
-fn vec3_max(a :vec3, b : vec3) -> vec3 {
-    vec3::new(f32::max(a.x, b.x), f32::max(a.y, b.y), f32::max(a.z, b.z))
+fn vec3_max(a :Vec3, b : Vec3) -> Vec3 {
+    Vec3::new(f32::max(a.x, b.x), f32::max(a.y, b.y), f32::max(a.z, b.z))
 }
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Aabb {
-    radius : vec3,
-    center : vec3,
+    radius : Vec3,
+    center : Vec3,
     color : Rgba<u8>
 }
 
 impl Aabb {
 
-    pub fn new(center : vec3, radius: vec3)-> Aabb{
+    pub fn new(center : Vec3, radius: Vec3)-> Aabb{
         Aabb { radius: radius, center: center, color: Rgba([0,0,0,0]) }
     }
 
     pub fn distance(&self,  p : Vec3f) -> f32{
         let p2 = p - self.center;
         let q = p2.abs() - self.radius;
-        return vec3_max(q,vec3::zeros()).norm()
+        return vec3_max(q,Vec3::zeros()).norm()
            + f32::min(f32::max(q.x, f32::max(q.y, q.z)), 0.0);
     }
     
@@ -93,8 +93,8 @@ impl Into<DistanceFieldEnum> for Aabb{
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Gradient {
-    p1 : vec3,
-    p2 : vec3,
+    p1 : Vec3,
+    p2 : Vec3,
     c1 : Rgba<u8>,
     c2 : Rgba<u8>,
     inner : Rc<DistanceFieldEnum>
@@ -102,17 +102,14 @@ pub struct Gradient {
 
 impl Gradient {
 
-    pub fn new(p1 : vec3, p2 : vec3, c1: Rgba<u8>, c2: Rgba<u8>, inner: Rc<DistanceFieldEnum>)-> Gradient{
+    pub fn new(p1 : Vec3, p2 : Vec3, c1: Rgba<u8>, c2: Rgba<u8>, inner: Rc<DistanceFieldEnum>)-> Gradient{
         Gradient {p1 : p1, p2 : p2, c1: c1, c2: c2, inner: inner }
     }
     
-    pub fn color(&self, p : vec3) -> Rgba<u8> {
-        
+    pub fn color(&self, p : Vec3) -> Rgba<u8> {
         let pt2 = p - self.p1;
         let l2 = (self.p1 - self.p2).norm_squared();
-            
         let f = (self.p2 - self.p1).dot(&pt2) / l2;
-        println!("{}", f);
         return rgba_interp(self.c1, self.c2, f);
           
     }
