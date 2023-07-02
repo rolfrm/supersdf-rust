@@ -31,11 +31,11 @@ impl State for AppState {
 }
 
 fn main() {
-    let aabb2 = Aabb::new(Vec3f::new(2.0,0.0,0.0), Vec3f::new(1.0, 1.0, 1.5))
+    let aabb2 = Aabb::new(Vec3f::new(1.0,0.0,0.0), Vec3f::new(1.0, 1.0, 1.5))
        .color(Rgba([255,255,255,255]));
     let grad = Gradient::new(Vec3f::new(1.0,0.0,0.0), Vec3f::new(3.0,0.0,0.0)
     , Rgba([255,0,0,255]), Rgba([255,255,255,255]), Rc::new(aabb2.into()));
-    let sphere = Sphere::new(Vec3f::new(-2.0,0.0,0.0), 2.0);
+    let sphere = Sphere::new(Vec3f::new(-1.0,0.0,0.0), 2.0);
     let grad2 = Gradient::new(Vec3f::new(0.0,-2.0,0.0), Vec3f::new(0.0,2.0,0.0)
     , Rgba([255,255,255,255]), Rgba([0,0,255,255]), Rc::new(sphere.into()));
     

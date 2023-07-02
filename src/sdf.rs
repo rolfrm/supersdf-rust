@@ -146,15 +146,13 @@ impl Add {
         let ld = self.left.distance_color(p);
         let rd = self.right.distance_color(p);
         if ld.0 < rd.0 {
-            if(ld.0 > 0.0){
-               //return (ld.0, rgba_interp(ld.1, rd.1, ld.0 / (ld.0 + rd.0)));
-            }
+            //return (ld.0, rgba_interp(ld.1, rd.1, (ld.0 + 0.1) / (ld.0 + rd.0 + 0.1)));
+            
             
             return ld;
         }
-        if(rd.0 > 0.0){
-            //return (rd.0, rgba_interp(rd.1, ld.1, rd.0 / (ld.0 + rd.0)));
-        }
+        //return (rd.0, rgba_interp(rd.1, ld.1, (rd.0 + 0.1) / (ld.0 + rd.0 + 0.1)));
+        
         return rd;
     }
 }

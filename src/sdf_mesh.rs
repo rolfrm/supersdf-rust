@@ -73,21 +73,6 @@ let w2 = f(point, v0, v1);
 w0 * c0 + w1 * c1 + w2 * c2
 }
 
-fn interpolate_color(v0: &Vec2, v1: &Vec2, v2: &Vec2,
-    c0: &Vec3, c1: &Vec3, c2: &Vec3, point: &Vec2) -> Vec3 {
-let v01 = v1 - v0;
-let v02 = v2 - v0;
-let v0p = point - v0;
-
-let d = v01.dot(&v02.cross(&v0p));
-let u = v0p.dot(&v02.cross(&v0p)) / d;
-let v = v01.dot(&v0p.cross(&v0p)) / d;
-let w = 1.0 - u - v;
-
-u * c0 + v * c1 + w * c2
-}
-
-
 
 impl VertexesList{
     pub fn to_mesh(&self, df : &DistanceFieldEnum) -> (Mesh, DynamicImage){
@@ -103,7 +88,7 @@ impl VertexesList{
         let fw = 1.0 / (columns as f64);
         let fh = 1.0 / (rows as f64);
 
-        let mut buf = RgbaImage::new(256, 256);
+        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(256, 256);
         let bufsize = Vec2::new(buf.width() as f32, buf.height() as f32);
 
 
@@ -114,8 +99,8 @@ impl VertexesList{
             let rowf = row / (columns as f64);
             let colf = col / (columns as f64);
             let uv 
-                = Point2::new((colf + fw * (match faceit == 1 { false => 0.1, true => 0.9})) as f32 
-                     , (rowf + fh * (match faceit == 2 { false => 0.1, true => 0.9})) as f32);
+                = Point2::new((colf + fw * (match faceit == 1 { false => 0.2, true => 0.80})) as f32 
+                     , (rowf + fh * (match faceit == 2 { false => 0.2, true => 0.80})) as f32);
             coords.push(v.clone().into());
             uvs.push(uv);
             face[faceit] = it;
@@ -138,13 +123,14 @@ impl VertexesList{
                 let pb = (uvb * bufsize.x);
                 let pc = (uvc * bufsize.x);
                 
-                for x in (pa.x as u32)+0 ..(pb.x.ceil() as u32 -0) {
-                    for y in (pa.y as u32 + 0) .. (pc.y.ceil() as u32 -0) {
+                for x in (f32::max(0.0, pa.x - 1.0) as u32) .. u32::min(buf.width() - 1, (pb.x.ceil() as u32 + 1)) {
+                    for y in (f32::max(0.0, pa.y - 1.0) as u32 ) .. u32::min(buf.height() - 1, pc.y.ceil() as u32 + 1) {
                         let p0 = Vec2::new(x as f32, y as f32);
                         let v0 = interpolate2(pa, pb, pc, va, vb, vc, p0);
                         //let xx = Vec3f::new(va.x, va.y, va.z) * (1.0 - fx) + Vec3f::new(vb.x, vb.y, vb.z) * fx;
                         let dc = df.distance_color(v0);
                         buf.put_pixel(x,y, dc.1);
+                        
                         
                     }
                         
