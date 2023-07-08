@@ -1,11 +1,14 @@
-
-pub mod mc;
+mod mc;
 mod sdf;
 mod sdf_mesh;
+mod triangle_raster;
+
+use noise::{Perlin, NoiseFn};
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use kiss3d::resource::{TextureManager};
+use kiss3d::resource::TextureManager;
 use sdf::*;
 use sdf_mesh::*;
 
@@ -44,24 +47,31 @@ pub fn add(a: u32, b: u32) -> u32 {
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn main() -> Result<(), JsValue> {
-    let aabb2 = Aabb::new(Vec3f::new(2.0,0.0,0.0), Vec3f::new(1.0, 1.0, 1.5))
-       .color(Rgba([255,255,255,255]));
-    let grad = Gradient::new(Vec3f::new(1.0,0.0,0.0), Vec3f::new(3.0,0.0,0.0)
-    , Rgba([255,0,0,255]), Rgba([255,255,255,255]), Rc::new(aabb2.into()));
-    let sphere = Sphere::new(Vec3f::new(-2.0,0.0,0.0), 2.0);
-    let grad2 = Gradient::new(Vec3f::new(0.0,-2.0,0.0), Vec3f::new(0.0,2.0,0.0)
-    , Rgba([255,255,255,255]), Rgba([0,0,255,255]), Rc::new(sphere.into()));
-    
+     //return;
+     let aabb2 = Aabb::new(Vec3f::new(2.0,0.0,0.0), Vec3f::new(1.0, 1.0, 1.5))
+     .color(Rgba([255,255,255,255]));
+  let grad = Gradient::new(Vec3f::new(1.9,0.0,0.0), Vec3f::new(2.1,0.0,0.0)
+  , Rgba([255,0,0,255]), Rgba([255,255,255,255]), Rc::new(aabb2.into()));
+  let sphere = Sphere::new(Vec3f::new(-2.0,0.0,0.0), 2.0).color(Rgba([255,0,0,255]));
+  let grad2 = Gradient::new(Vec3f::new(0.0,-0.2 + 0.2,0.0), Vec3f::new(0.0,0.2+ 0.2,0.0)
+  , Rgba([255,255,255,0]), Rgba([0,0,255,255]), Rc::new(sphere.into()));
 
-    let sdf = DistanceFieldEnum::Empty{}.Insert2(grad2) 
-        //.Insert2(Sphere::new(Vec3f::new(2.0,0.0,0.0), 2.0).color(Rgba([0, 255,0,255])))
-        //.Insert2(Sphere::new(Vec3f::new(0.0,2.0,0.0), 2.0).color(Rgba([255, 255,0,255])))
-        //.Insert2(Sphere::new(Vec3f::new(0.0,-2.0,0.0), 2.0).color(Rgba([255, 255,255,255])))
-        //.Insert2(Sphere::new(Vec3f::new(0.0,0.0,2.0), 2.0).color(Rgba([255, 0,255,255])))
-        //.Insert2(Sphere::new(Vec3f::new(0.0,0.0,-2.0), 2.0).color(Rgba([0, 0,255,255])))
-        
-        .Insert2(grad)
-        ;
+  let grad3 =  Gradient::new(Vec3f::new(-2.2, 0.0, 0.0), Vec3f::new(-1.8,0.0,0.0), 
+          Rgba([0,255,0,255]), 
+          Rgba([0,0,255,0]), 
+          Rc::new(grad2.into()));
+  let noise = Noise::new(123, Rgba([95,155,55,255]), 
+      Rgba([0,0,255,0]), Rc::new(grad3.into()));
+
+  let sdf = DistanceFieldEnum::Empty{}.Insert2(noise) 
+      //.Insert2(Sphere::new(Vec3f::new(2.0,0.0,0.0), 2.0).color(Rgba([0, 255,0,255])))
+      //.Insert2(Sphere::new(Vec3f::new(0.0,2.0,0.0), 2.0).color(Rgba([255, 255,0,255])))
+      //.Insert2(Sphere::new(Vec3f::new(0.0,-2.0,0.0), 2.0).color(Rgba([255, 255,255,255])))
+      //.Insert2(Sphere::new(Vec3f::new(0.0,0.0,2.0), 2.0).color(Rgba([255, 0,255,255])))
+      //.Insert2(Sphere::new(Vec3f::new(0.0,0.0,-2.0), 2.0).color(Rgba([0, 0,255,255])))
+      
+      .Insert2(grad)
+      ;
 
     let d = sdf.distance(Vec3f::new(6.5, 5.0, 0.0));
     println!("distance: {}", d);

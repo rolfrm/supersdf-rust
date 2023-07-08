@@ -1,7 +1,8 @@
 
-use image::Rgba;
+use image::{Rgba, Pixel};
 use kiss3d::nalgebra::{Vector3};
 use std::rc::Rc;
+use noise::{Perlin, Simplex, NoiseFn, SuperSimplex};
 
 use crate::Vec3;
 type Vec3f = Vector3<f32>;
@@ -13,6 +14,7 @@ pub enum DistanceFieldEnum{
     Add(Add),
     BoundsAdd(Add, Sphere),
     Gradient(Gradient),
+    Noise(Noise),
     Empty
 }
 
@@ -110,7 +112,11 @@ impl Gradient {
         let pt2 = p - self.p1;
         let l2 = (self.p1 - self.p2).norm_squared();
         let f = (self.p2 - self.p1).dot(&pt2) / l2;
-        return rgba_interp(self.c1, self.c2, f);
+        let mut colorbase = self.inner.distance_color(p).1;
+        let mut color = rgba_interp(self.c1, self.c2, f);
+        colorbase.blend(&color);
+        colorbase.blend(&color);
+        return colorbase;
           
     }
 }
@@ -121,6 +127,39 @@ impl Into<DistanceFieldEnum> for Gradient{
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Noise {
+    noise: Perlin,
+    c1 : Rgba<u8>,
+    c2 : Rgba<u8>,
+    inner : Rc<DistanceFieldEnum>
+}
+impl PartialEq for Noise {
+    fn eq(&self, other: &Self) -> bool {
+        return self.c1 == other.c1 && self.c2 == other.c2 && self.inner == other.inner
+    }
+}
+
+impl Noise {
+    pub fn new(seed : u32, c1: Rgba<u8>, c2: Rgba<u8>, inner: Rc<DistanceFieldEnum>)-> Noise{
+        Noise {noise: Perlin::new(seed), c1: c1, c2: c2, inner: inner }
+    }
+
+    fn color(&self, pos: Vec3) -> Rgba<u8> {
+        let pos2 = pos * 10.0;
+        let n = self.noise.get([pos2.x as f64, pos2.y  as f64, pos2.z as f64]);
+        let mut colorbase = self.inner.distance_color(pos).1;
+        let  color = rgba_interp(self.c1, self.c2, n as f32);
+        return color;
+        
+    }
+}
+
+impl Into<DistanceFieldEnum> for Noise{
+    fn into(self) -> DistanceFieldEnum {
+        DistanceFieldEnum::Noise(self)
+    }
+}
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Add{
@@ -176,6 +215,7 @@ impl DistanceField for DistanceFieldEnum{
             DistanceFieldEnum::Aabb(aabb) => aabb.distance(pos),
             DistanceFieldEnum::Empty => f32::INFINITY,
             DistanceFieldEnum::Gradient(gradient) => gradient.inner.distance(pos),
+            DistanceFieldEnum::Noise(noise) => noise.inner.distance(pos),
             DistanceFieldEnum::BoundsAdd(add, bounds ) => {
                 let d1 = bounds.distance(pos);
                 if d1 > bounds.radius * 0.5 {
@@ -212,6 +252,7 @@ impl DistanceFieldEnum{
             DistanceFieldEnum::BoundsAdd(_, sphere ) => sphere.clone(),
             DistanceFieldEnum::Empty => Sphere::new(Vec3f::zeros(), f32::INFINITY),
             DistanceFieldEnum::Gradient(gradient) => gradient.inner.CalculateSphereBounds(),
+            DistanceFieldEnum::Noise(noise) => noise.inner.CalculateSphereBounds(),
             DistanceFieldEnum::Add(add) => {
                 let left = add.left.CalculateSphereBounds();
                 let right = add.right.CalculateSphereBounds();
@@ -253,7 +294,8 @@ impl DistanceFieldEnum{
                 }
                 add.distance_color(pos)
             },
-            DistanceFieldEnum::Gradient(gradient) => (gradient.inner.distance(pos), gradient.color(pos))
+            DistanceFieldEnum::Gradient(gradient) => (gradient.inner.distance(pos), gradient.color(pos)),
+            DistanceFieldEnum::Noise(noise) => (noise.inner.distance(pos), noise.color(pos))
         }
     }
 

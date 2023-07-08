@@ -1,19 +1,13 @@
-use crate::sdf;
-use crate::mc;
+use crate::{sdf, mc, triangle_raster};
 
-use std::borrow::Borrow;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::collections::HashMap;
 
-use kiss3d::resource::{Mesh, Texture, TextureManager};
+use kiss3d::{resource::{Texture, TextureManager, Mesh}, nalgebra::ComplexField};
 use sdf::*;
 use mc::*;
+use triangle_raster::*;
 
-use kiss3d::light::Light;
-use kiss3d::scene::SceneNode;
-
-use kiss3d::window::{State, Window};
-use kiss3d::nalgebra::{UnitQuaternion, Vector3, Point3, OPoint, Const, Translation3, Point2, Vector2, DimMul};
+use kiss3d::nalgebra::{Vector3, Point3, OPoint, Const, Point2, Vector2};
 use image::{DynamicImage, ImageBuffer, RgbaImage, Rgba};
 
 type Vec3f = Vector3<f32>;
@@ -40,7 +34,7 @@ impl MarchingCubesReciever for VertexesList{
     }
 }
 
-fn interpolate2(p0 :Vec2, p1:Vec2, p2:Vec2, color0 :Vec3, color1:Vec3, color2:Vec3, point: Vec2) -> Vec3 {
+pub fn interpolate_vec2(p0 :Vec2, p1:Vec2, p2:Vec2, color0 :Vec3, color1:Vec3, color2:Vec3, point: Vec2) -> Vec3 {
     let v0 = p1 - p0;
     let v1 = p2 - p0;
     let v2 = point - p0;
@@ -73,6 +67,17 @@ let w2 = f(point, v0, v1);
 w0 * c0 + w1 * c1 + w2 * c2
 }
 
+trait VecKey {
+    fn key(&self) -> Vector3<i32>;
+}
+
+impl VecKey for Vec3 {
+    fn key(&self) -> Vector3<i32> {
+        Vector3::new((self.x * 100.0) as i32, (self.y * 100.0) as i32, (self.z * 100.0) as i32)
+    }
+}
+
+
 
 impl VertexesList{
     pub fn to_mesh(&self, df : &DistanceFieldEnum) -> (Mesh, DynamicImage){
@@ -89,8 +94,20 @@ impl VertexesList{
         let fw = 1.0 / (columns as f64);
         let fh = 1.0 / (rows as f64);
 
-        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(512, 512);
+        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(1024, 1024);
         let bufsize = Vec2::new(buf.width() as f32, buf.height() as f32);
+        let mut dict : HashMap<Vector3<i32>, i32> = HashMap::new();
+
+        let mut edges : HashMap<Vector2<i32>, i32> = HashMap::new();
+
+        for v in &self.verts {
+            let key = v.key();
+            
+            if dict.contains_key(&key) {
+                dict.insert(key, dict.len() as i32);
+            }
+        }
+
 
         let margin = 0.1;
         for v in &self.verts {
@@ -114,20 +131,58 @@ impl VertexesList{
                 faceit = 0;
                 faces.push(face);
 
+                let va = coords[coords.len() - 3].to_homogeneous().xyz();
+                let vb = coords[coords.len() - 2].to_homogeneous().xyz();
+                let vc = coords[coords.len() - 1].to_homogeneous().xyz();
+                
+                let ka = va.key();
+                let kb = vb.key();
+                let kc = vc.key();
+                /*let ia = dict[&ka];
+                let ib = dict[&kb];
+                let ic = dict[&kc];
+
+                let e1 = if ia < ib {Vector2::new(ia, ib)} else {Vector2::new(ib, ia)};
+                let e2 = if ia < ic {Vector2::new(ia, ic)} else {Vector2::new(ic, ia)};
+                let e3 = if ic < ib {Vector2::new(ic, ib)} else {Vector2::new(ib, ic)};
+                if edges.contains_key(&e1) {
+                    edges.insert(e1, edges.len() as i32);
+                }                
+                if edges.contains_key(&e2) {
+                    edges.insert(e2, edges.len() as i32);
+                }                
+                if edges.contains_key(&e3) {
+                    edges.insert(e3, edges.len() as i32);
+                } */               
+
                 // now trace the colors into the texture for this triangle.
                 let uva : Vec2 = uvs[uvs.len() - 3].to_homogeneous().xy();
                 let uvb = uvs[uvs.len() - 2].to_homogeneous().xy();
                 let uvc = uvs[uvs.len() - 1].to_homogeneous().xy();
 
-                let va = coords[coords.len() - 3].to_homogeneous().xyz();
-                let vb = coords[coords.len() - 2].to_homogeneous().xyz();
-                let vc = coords[coords.len() - 1].to_homogeneous().xyz();
 
+                // uv in pixel coordinate with a 1px margin.
                 let pa = uva * bufsize.x;
                 let pb = uvb * bufsize.x;
                 let pc = uvc * bufsize.x;
+                let trig = Triangle::new(
+                    pa + Vec2::new(-2.0, -2.0), 
+                    pb + Vec2::new(1.0, 0.0), 
+                    pc + Vec2::new(0.0, 1.0)
+                );
+
+                iter_triangle(&trig, |pixel| {
+                    let x = pixel.x as u32;
+                    let y = pixel.y as u32;
+                    let px2 = Vec2::new(x as f32, y as f32) + Vec2::new(0.5, 0.5);
+                    let v0 = interpolate_vec2(pa, pb, pc, va, vb, vc, px2);
+                        
+                    let dc = df.distance_color(v0);
+                    buf.put_pixel(x,y, dc.1);
+
+                });
                 
-                for x in (f32::max(0.0, pa.x - 1.0) as u32) .. u32::min(buf.width() - 1, (pb.x.ceil() as u32)) {
+                /*for x in (f32::max(0.0, pa.x - 1.0) as u32) .. u32::min(buf.width() - 1, (pb.x.ceil() as u32)) {
                     for y in (f32::max(0.0, pa.y - 1.0) as u32 ) .. u32::min(buf.height() - 1, pc.y.ceil() as u32) {
                         let p0 = Vec2::new(x as f32, y as f32);
                         let v0 = interpolate2(pa, pb, pc, va, vb, vc, p0);
@@ -136,14 +191,15 @@ impl VertexesList{
                         buf.put_pixel(x,y, dc.1);
                     }
                         
-                }
+                }*/
             }
         }
         
         let image = DynamicImage::ImageRgba8(buf);
         
 
-        return (Mesh::new(coords, faces, Option::Some(normals), Option::Some(uvs), false), image);
+        return (Mesh::new(coords, faces, Option::Some(normals), 
+        Option::Some(uvs), false), image);
     }
 }
 
