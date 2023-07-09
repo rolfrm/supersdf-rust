@@ -86,7 +86,7 @@ pub fn main() -> Result<(), JsValue> {
     //println!("Cube:!\n");
     //process_cube(&sdf, Vec3f::new(1.0, 0.0, 0.0), 0.2, &mut r );
 
-    marching_cubes_sdf(&mut r, &sdf2, Vec3f::zeros(), 5.0, 0.25);
+    marching_cubes_sdf(&mut r, &sdf2, Vec3f::zeros(), 5.0, 0.4);
     //println!("{:?}", r.verts);
 
 

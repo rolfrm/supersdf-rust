@@ -184,12 +184,12 @@ pub fn iter_triangle<F: FnMut(Vec2f)>(trig: &Triangle, mut f :  F) {
     assert!(b.y >= c.y);
     assert!(a.y >= b.y);
     if(a.y > b.y){
-    for yi in F32Range::new(y0,b.y, Some(-1.0)) {
+    for yi in F32Range::new(y0.floor(),b.y.ceil(), Some(-1.0)) {
         assert!(yi >= b.y);
         let x1 = a.x + dx1 * (yi - a.y);
         let x2 = a.x + dx2 * (yi - a.y);
         
-        for xi in F32Range::new(x1, x2, None){
+        for xi in F32Range::new(x1.floor(), x2.ceil(), None){
             f(Vec2f::new(xi, yi));
         }
     }
@@ -198,10 +198,10 @@ pub fn iter_triangle<F: FnMut(Vec2f)>(trig: &Triangle, mut f :  F) {
 
     if b.y > c.y {
     // scan lower triangle.
-        for yi in F32Range::new(b.y, c.y, Some(-1.0)) {
+        for yi in F32Range::new(b.y.floor(), c.y.ceil(), Some(-1.0)) {
             let x1 = a.x + dx1 * (yi - a.y);
             let x2 = b.x + dx3 * (yi - b.y);
-            for xi in F32Range::new(x1, x2, None){
+            for xi in F32Range::new(x1.floor(), x2.ceil(), None){
                 f(Vec2f::new(xi, yi));
             }
         }

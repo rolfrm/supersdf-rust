@@ -130,26 +130,33 @@ impl Into<DistanceFieldEnum> for Gradient{
 #[derive(Clone, Debug)]
 pub struct Noise {
     noise: Perlin,
+    seed: u32,
     c1 : Rgba<u8>,
     c2 : Rgba<u8>,
     inner : Rc<DistanceFieldEnum>
 }
 impl PartialEq for Noise {
     fn eq(&self, other: &Self) -> bool {
-        return self.c1 == other.c1 && self.c2 == other.c2 && self.inner == other.inner
+        return self.seed == other.seed && self.c1 == other.c1 && self.c2 == other.c2 && self.inner == other.inner
     }
 }
 
 impl Noise {
     pub fn new(seed : u32, c1: Rgba<u8>, c2: Rgba<u8>, inner: Rc<DistanceFieldEnum>)-> Noise{
-        Noise {noise: Perlin::new(seed), c1: c1, c2: c2, inner: inner }
+        Noise {seed: seed, noise: Perlin::new(seed), c1: c1, c2: c2, inner: inner }
     }
 
     fn color(&self, pos: Vec3) -> Rgba<u8> {
         let pos2 = pos * 10.0;
         let n = self.noise.get([pos2.x as f64, pos2.y  as f64, pos2.z as f64]);
-        let mut colorbase = self.inner.distance_color(pos).1;
-        let  color = rgba_interp(self.c1, self.c2, n as f32);
+        let mut  color = rgba_interp(self.c1, self.c2, n as f32);
+        if color[3] < 255 {
+            let mut colorbase = self.inner.distance_color(pos).1;
+        
+            colorbase.blend(&color);
+            //color.blend(&colorbase);
+            return colorbase;
+        }
         return color;
         
     }
@@ -234,6 +241,11 @@ impl DistanceField for Add {
 }
 
 impl DistanceFieldEnum{
+
+    pub fn distance_and_optiomize(&self, pos: Vec3f, size: f32) -> (f32, DistanceFieldEnum) {
+        return (self.distance(pos), self.clone());
+    }
+
     pub fn Insert(&self, sdf : DistanceFieldEnum) -> DistanceFieldEnum {
         match self {
             DistanceFieldEnum::Empty => sdf,

@@ -167,8 +167,8 @@ impl VertexesList{
                 let pc = uvc * bufsize.x;
                 let trig = Triangle::new(
                     pa + Vec2::new(-2.0, -2.0), 
-                    pb + Vec2::new(1.0, 0.0), 
-                    pc + Vec2::new(0.0, 1.0)
+                    pb + Vec2::new(2.0, -2.0), 
+                    pc + Vec2::new(-2.0, 2.0)
                 );
 
                 iter_triangle(&trig, |pixel| {
@@ -181,17 +181,6 @@ impl VertexesList{
                     buf.put_pixel(x,y, dc.1);
 
                 });
-                
-                /*for x in (f32::max(0.0, pa.x - 1.0) as u32) .. u32::min(buf.width() - 1, (pb.x.ceil() as u32)) {
-                    for y in (f32::max(0.0, pa.y - 1.0) as u32 ) .. u32::min(buf.height() - 1, pc.y.ceil() as u32) {
-                        let p0 = Vec2::new(x as f32, y as f32);
-                        let v0 = interpolate2(pa, pb, pc, va, vb, vc, p0);
-                        
-                        let dc = df.distance_color(v0);
-                        buf.put_pixel(x,y, dc.1);
-                    }
-                        
-                }*/
             }
         }
         
