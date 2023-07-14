@@ -99,8 +99,8 @@ impl VertexesList{
         let fh = 1.0 / (rows as f64);
 
         let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(1024, 1024);
-        let pxmargin = 15;
-        let uvmargin = (pxmargin as f64) / (buf.width() as f64);
+        let pxmargin = 3;
+        let uvmargin = (1.0 + rows as f64) * (pxmargin as f64) / (buf.width() as f64);
         let bufsize: kiss3d::nalgebra::Matrix<f32, Const<2>, Const<1>, kiss3d::nalgebra::ArrayStorage<f32, 2, 1>> = Vec2::new(buf.width() as f32, buf.height() as f32);
         let mut dict : HashMap<Vector3<i32>, i32> = HashMap::new();
 
