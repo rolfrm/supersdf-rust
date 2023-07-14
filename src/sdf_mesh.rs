@@ -23,6 +23,10 @@ impl VertexesList {
     pub fn new() -> VertexesList{
         VertexesList { verts: Vec::new() }
     }
+
+    pub fn any(&self) -> bool {
+        self.verts.len() > 0
+    }
 }
 
 impl MarchingCubesReciever for VertexesList{
@@ -95,7 +99,9 @@ impl VertexesList{
         let fh = 1.0 / (rows as f64);
 
         let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(1024, 1024);
-        let bufsize = Vec2::new(buf.width() as f32, buf.height() as f32);
+        let pxmargin = 15;
+        let uvmargin = (pxmargin as f64) / (buf.width() as f64);
+        let bufsize: kiss3d::nalgebra::Matrix<f32, Const<2>, Const<1>, kiss3d::nalgebra::ArrayStorage<f32, 2, 1>> = Vec2::new(buf.width() as f32, buf.height() as f32);
         let mut dict : HashMap<Vector3<i32>, i32> = HashMap::new();
 
         let mut edges : HashMap<Vector2<i32>, i32> = HashMap::new();
@@ -120,8 +126,8 @@ impl VertexesList{
             normals.push(normal);
             
             let uv 
-                = Point2::new((colf + fw * (match faceit == 1 { false => margin, true => 1.0 - margin})) as f32 
-                     , (rowf + fh * (match faceit == 2 { false => margin, true => 1.0 - margin})) as f32);
+                = Point2::new((colf +  fw * (match faceit == 1 { false => uvmargin, true => 1.0 - uvmargin})) as f32 
+                     , (rowf + fh * (match faceit == 2 { false => uvmargin, true => 1.0 - uvmargin})) as f32);
             coords.push(v.clone().into());
             uvs.push(uv);
             face[faceit] = it;
@@ -170,6 +176,8 @@ impl VertexesList{
                     pb + Vec2::new(2.0, -2.0), 
                     pc + Vec2::new(-2.0, 2.0)
                 );
+                println!("{:?} {}", trig, uvmargin);
+                    
 
                 iter_triangle(&trig, |pixel| {
                     let x = pixel.x as u32;
@@ -178,7 +186,9 @@ impl VertexesList{
                     let v0 = interpolate_vec2(pa, pb, pc, va, vb, vc, px2);
                         
                     let dc = df.distance_color(v0);
-                    buf.put_pixel(x,y, dc.1);
+                    if x < buf.width() && y < buf.height() {
+                        buf.put_pixel(x,y, dc.1);
+                    }
 
                 });
             }

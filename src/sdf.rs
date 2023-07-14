@@ -147,9 +147,10 @@ impl Noise {
     }
 
     fn color(&self, pos: Vec3) -> Rgba<u8> {
-        let pos2 = pos * 10.0;
-        let n = self.noise.get([pos2.x as f64, pos2.y  as f64, pos2.z as f64]);
-        let mut  color = rgba_interp(self.c1, self.c2, n as f32);
+        let pos2 = pos * 2.0;
+        let n1 = self.noise.get([pos2.x as f64, pos2.y  as f64, pos2.z as f64]);
+        let n2 = self.noise.get([(pos2.x * 4.0) as f64, (pos2.y * 4.0)  as f64, (pos2.z * 4.0) as f64]);
+        let mut  color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2) as f32);
         if color[3] < 255 {
             let mut colorbase = self.inner.distance_color(pos).1;
         
