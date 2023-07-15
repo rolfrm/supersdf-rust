@@ -3,6 +3,8 @@ mod sdf;
 mod sdf_mesh;
 mod triangle_raster;
 
+use kiss3d::camera::{ArcBall, FirstPerson, Camera};
+use kiss3d::event::{Action, WindowEvent, MouseButton};
 use noise::{Perlin, NoiseFn};
 
 use std::cell::RefCell;
@@ -17,7 +19,7 @@ use kiss3d::light::Light;
 use kiss3d::scene::SceneNode;
 
 use kiss3d::window::{State, Window};
-use kiss3d::nalgebra::{UnitQuaternion, Vector3, Translation3, Vector2};
+use kiss3d::nalgebra::{UnitQuaternion, Vector3, Translation3, Vector2, Point3, DimMul, Vector4, DimDiv, Point2};
 use image::{Rgba, ImageBuffer, RgbaImage, DynamicImage};
 
 use crate::triangle_raster::Triangle;
@@ -67,7 +69,7 @@ impl SdfScene {
     }
 
     pub fn iterate_scene_rec(&mut self, p : Vec3, size : f32 ){
-        println!("{:?}", p);
+        
         let (d, omodel) = self.sdf.distance_and_optiomize(p, size);
         if  d > size * sqrt_3 {
             return;
@@ -117,20 +119,69 @@ impl SdfScene {
 struct AppState {
         sdf_iterator : SdfScene,
         nodes: HashMap<SdfKey, SceneNode>,
-        texture_manager : TextureManager
+        texture_manager : TextureManager,
+        cursor_pos: Vec2,
+        camera : ArcBall
 }
     
 
 impl AppState {
-   pub fn new(sdf_iterator : SdfScene ) -> AppState{
-    AppState {  sdf_iterator, nodes: HashMap::new(), texture_manager : TextureManager::new() }
+   pub fn new(sdf_iterator : SdfScene) -> AppState{
+    //let cam = FirstPerson::new(Point3::new(0.0,0.0,-5.0), Point3::new(0.0, 0.0, 0.0));
+    let cam = ArcBall::new(Point3::new(0.0,0.0,-5.0), Point3::new(0.0, 0.0, 0.0));
+    
+    AppState {  sdf_iterator, nodes: HashMap::new(), texture_manager : TextureManager::new(), cursor_pos : Vec2::new(0.0, 0.0)
+        , camera: cam }
    }
 }
 
 impl State for AppState {
+
+    fn cameras_and_effect_and_renderer(
+            &mut self,
+        ) -> (
+            Option<&mut dyn kiss3d::camera::Camera>,
+            Option<&mut dyn kiss3d::planar_camera::PlanarCamera>,
+            Option<&mut dyn kiss3d::renderer::Renderer>,
+            Option<&mut dyn kiss3d::post_processing::PostProcessingEffect>,
+        ) {
+        return (Some(&mut self.camera), None, None, None);
+    }
+
     fn step(&mut self, win: &mut Window) {
+
+        for evt in win.events().iter() {
+            match evt.value {
+                WindowEvent::MouseButton(MouseButton::Button2, Action::Press, _) => {
+                    let win_size = win.size();
+                    let win_size2 = Vec2::new(win_size.x as f32, win_size.y as f32);
+                    
+                    let unp = self.camera.unproject(&Point2::new(self.cursor_pos.x,self.cursor_pos.y), 
+                    &win_size2);
+                    let at = unp.0;
+                    let col = self.sdf_iterator.sdf.cast_ray(Vec3::new(at.x, at.y, at.z),
+                    unp.1, 1000.0);
+                    
+                     if let Some((_, p )) = col {
+
+                        let newobj = Sphere::new(p, 0.5).color(Rgba([255,0,0,255]));
+                        self.sdf_iterator.sdf = self.sdf_iterator.sdf.Insert2(newobj);
+                        self.nodes.clear();
+                        
+                     }
+                }
+                WindowEvent::CursorPos(x, y, _) => {
+                    self.cursor_pos = Vec2::new(x as f32, y as f32);
+                    
+                }
+                _ => {
+
+                }
+            }
+        }
+
         //self.c.prepend_to_local_rotation(&self.rot);
-        self.sdf_iterator.iterate_scene(self.sdf_iterator.eye_pos, 5.0);
+        self.sdf_iterator.iterate_scene(self.sdf_iterator.eye_pos, 10.0);
         for block in &self.sdf_iterator.render_blocks {
             self.nodes.entry(block.2).or_insert_with(||{
                 println!("Node at: {:?}", block);
@@ -139,16 +190,16 @@ impl State for AppState {
 
                 let mut r = VertexesList::new();
                 
-                marching_cubes_sdf(&mut r, &self.sdf_iterator.sdf, block.0,  size, 0.4);
+                marching_cubes_sdf(&mut r, &self.sdf_iterator.sdf, block.0,  size, 0.2);
                 println!("Mc done: {:?}", r.any());
                 if r.any() {
                 let meshtex = r.to_mesh(&self.sdf_iterator.sdf);  
 
                 let name = format!("{:?}", block.2).to_string();
-                meshtex.1.save(format!("{}-{}-{}.png", pos.x, pos.y, pos.z));
-
-                let mut tex2 = self.texture_manager.add_image(meshtex.1, &name);
-  
+                //meshtex.1.save(format!("{}-{}-{}.png", pos.x, pos.y, pos.z));
+                
+                let mut tex2 = self.texture_manager.add_image_or_overwrite(meshtex.1, &name);
+                
                 
                 let mut node = win.add_mesh(Rc::new(meshtex.0.into()), Vec3f::new(1.0, 1.0, 1.0));
                 node.set_texture(tex2);
@@ -173,7 +224,7 @@ fn main() {
     let noise = Noise::new(123, Rgba([95,155,55,255]), 
         Rgba([255,255,255,255]), Rc::new(sphere.into()));
 
-    let sphere2 = Sphere::new(Vec3f::new(0.0,-1000.0,0.0), 995.0).color(Rgba([255,0,0,255]));
+    let sphere2 = Sphere::new(Vec3f::new(0.0,-200.0,0.0), 196.0).color(Rgba([255,0,0,255]));
     let noise2 = Noise::new(123, Rgba([255,155,55,255]), 
         Rgba([100,100,100,255]), Rc::new(sphere2.into()));
 
@@ -190,6 +241,7 @@ fn main() {
     let mut window = Window::new("Kiss3d: wasm example");
 
     window.set_light(Light::StickToCamera);
+    
     
     let state = AppState::new(sdf_iterator);
     

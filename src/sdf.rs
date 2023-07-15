@@ -147,10 +147,13 @@ impl Noise {
     }
 
     fn color(&self, pos: Vec3) -> Rgba<u8> {
-        let pos2 = pos * 2.0;
-        let n1 = self.noise.get([pos2.x as f64, pos2.y  as f64, pos2.z as f64]);
-        let n2 = self.noise.get([(pos2.x * 4.0) as f64, (pos2.y * 4.0)  as f64, (pos2.z * 4.0) as f64]);
-        let mut  color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2) as f32);
+        let pos1 = pos * 1.0;
+        let pos2 = pos1 * 0.25;
+        let pos3 = pos1 * 4.0;
+        let n1 = self.noise.get([pos1.x as f64, pos1.y  as f64, pos1.z as f64]);
+        let n2 = self.noise.get([pos2.x as f64, pos2.y as f64, pos2.z as f64]);
+        let n3 = self.noise.get([pos3.x as f64, pos3.y as f64, pos3.z as f64]);
+        let mut color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
         if color[3] < 255 {
             let mut colorbase = self.inner.distance_color(pos).1;
         
@@ -242,6 +245,25 @@ impl DistanceField for Add {
 }
 
 impl DistanceFieldEnum{
+
+    pub fn cast_ray(&self, pos: Vec3f, dir: Vec3f, max_dist: f32) -> Option<(f32, Vec3f)> {
+        let mut total_distance = 0.0;
+        let mut mpos = pos;
+        println!("{:?} {:?}", pos, dir);
+        loop {
+            let d = self.distance(mpos);
+            println!("{:?} {:?}", pos, d);
+            
+            total_distance += d;
+            mpos = mpos + d * dir;
+            if total_distance > max_dist {
+                return None;
+            }
+            if d < 0.001 {
+                return Some((total_distance, mpos));
+            }
+        }
+    }
 
     pub fn distance_and_optiomize(&self, pos: Vec3f, size: f32) -> (f32, DistanceFieldEnum) {
         return (self.distance(pos), self.clone());

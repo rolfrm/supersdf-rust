@@ -104,8 +104,6 @@ impl VertexesList{
         let bufsize: kiss3d::nalgebra::Matrix<f32, Const<2>, Const<1>, kiss3d::nalgebra::ArrayStorage<f32, 2, 1>> = Vec2::new(buf.width() as f32, buf.height() as f32);
         let mut dict : HashMap<Vector3<i32>, i32> = HashMap::new();
 
-        let mut edges : HashMap<Vector2<i32>, i32> = HashMap::new();
-
         for v in &self.verts {
             let key = v.key();
             
@@ -113,9 +111,6 @@ impl VertexesList{
                 dict.insert(key, dict.len() as i32);
             }
         }
-
-
-        let margin = 0.1;
         for v in &self.verts {
             let facei: i64 = faces.len() as i64;
             let row = (facei / columns) as f64;
@@ -141,26 +136,6 @@ impl VertexesList{
                 let vb = coords[coords.len() - 2].to_homogeneous().xyz();
                 let vc = coords[coords.len() - 1].to_homogeneous().xyz();
                 
-                let ka = va.key();
-                let kb = vb.key();
-                let kc = vc.key();
-                /*let ia = dict[&ka];
-                let ib = dict[&kb];
-                let ic = dict[&kc];
-
-                let e1 = if ia < ib {Vector2::new(ia, ib)} else {Vector2::new(ib, ia)};
-                let e2 = if ia < ic {Vector2::new(ia, ic)} else {Vector2::new(ic, ia)};
-                let e3 = if ic < ib {Vector2::new(ic, ib)} else {Vector2::new(ib, ic)};
-                if edges.contains_key(&e1) {
-                    edges.insert(e1, edges.len() as i32);
-                }                
-                if edges.contains_key(&e2) {
-                    edges.insert(e2, edges.len() as i32);
-                }                
-                if edges.contains_key(&e3) {
-                    edges.insert(e3, edges.len() as i32);
-                } */               
-
                 // now trace the colors into the texture for this triangle.
                 let uva : Vec2 = uvs[uvs.len() - 3].to_homogeneous().xy();
                 let uvb = uvs[uvs.len() - 2].to_homogeneous().xy();
@@ -176,8 +151,7 @@ impl VertexesList{
                     pb + Vec2::new(2.0, -2.0), 
                     pc + Vec2::new(-2.0, 2.0)
                 );
-                println!("{:?} {}", trig, uvmargin);
-                    
+                
 
                 iter_triangle(&trig, |pixel| {
                     let x = pixel.x as u32;
