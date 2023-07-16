@@ -3,22 +3,22 @@ mod sdf;
 mod sdf_mesh;
 mod triangle_raster;
 
-use noise::{NoiseFn, Perlin};
 
-use std::cell::RefCell;
-use std::rc::Rc;
 
-use kiss3d::resource::TextureManager;
-use sdf::*;
-use sdf_mesh::*;
 
-use kiss3d::light::Light;
+
+
+
+
+
+
+
 use kiss3d::scene::SceneNode;
 
-use kiss3d::nalgebra::{Point3, Translation3, UnitQuaternion, Vector2, Vector3};
+use kiss3d::nalgebra::{UnitQuaternion, Vector2, Vector3};
 use kiss3d::window::{State, Window};
 
-use image::Rgba;
+
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;

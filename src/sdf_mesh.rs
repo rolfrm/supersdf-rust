@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use kiss3d::{
     nalgebra::ComplexField,
-    resource::{Mesh, Texture, TextureManager},
+    resource::{Mesh},
 };
 use mc::*;
 use sdf::*;
@@ -227,11 +227,11 @@ pub fn marching_cubes_sdf<T1: DistanceField, T: MarchingCubesReciever>(
     res: f32,
 ) {
     let d = model.distance(position);
-    if (d < size * SQRT_3) {
-        if (d < -size * SQRT_3) {
+    if d < size * SQRT_3 {
+        if d < -size * SQRT_3 {
             return;
         }
-        if (size <= res) {
+        if size <= res {
             process_cube(model, position, size, recv);
         } else {
             let s2 = size * 0.5;

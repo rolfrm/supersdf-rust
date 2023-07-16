@@ -86,7 +86,7 @@ impl Iterator for LineYIterator {
             loop {
                 let val = self.line.next();
                 if let Some(v2) = val {
-                    if (v2.y != v0) {
+                    if v2.y != v0 {
                         self.last_y = Some(v2.y);
                         return Some(v2);
                     }
@@ -205,7 +205,7 @@ pub fn iter_triangle<F: FnMut(Vec2f)>(trig: &Triangle, mut f: F) {
     // scan upper triangle.
     assert!(b.y >= c.y);
     assert!(a.y >= b.y);
-    if (a.y > b.y) {
+    if a.y > b.y {
         for yi in F32Range::new(y0.floor(), b.y.ceil(), Some(-1.0)) {
             assert!(yi >= b.y);
             let x1 = a.x + dx1 * (yi - a.y);
@@ -264,8 +264,8 @@ impl Iterator for TriangleIterator {
         if self.state == 0 {
             self.state = 1;
             let a = self.triangle.a;
-            let mut l1 = Line::new(a, self.triangle.b).into_iter_y();
-            let mut l2 = Line::new(a, self.triangle.c).into_iter_y();
+            let l1 = Line::new(a, self.triangle.b).into_iter_y();
+            let l2 = Line::new(a, self.triangle.c).into_iter_y();
 
             self.lines = Some((l1, l2));
             println!("Next part..");
@@ -274,9 +274,9 @@ impl Iterator for TriangleIterator {
 
         if self.state == 1 {
             self.state = 2;
-            let a = self.triangle.b;
+            let _a = self.triangle.b;
             if let Some(ref b) = self.lines {
-                let mut l2 = Line::new(self.triangle.b, self.triangle.c).into_iter_y();
+                let l2 = Line::new(self.triangle.b, self.triangle.c).into_iter_y();
                 println!("Next part2..");
 
                 self.lines = Some((b.0, l2));

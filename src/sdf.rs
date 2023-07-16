@@ -1,8 +1,8 @@
 use crate::Vec3;
 use image::{Pixel, Rgba};
 use kiss3d::nalgebra as na;
-use kiss3d::nalgebra::{Matrix, Vector3};
-use noise::{NoiseFn, Perlin, Simplex, SuperSimplex};
+use kiss3d::nalgebra::{Vector3};
+use noise::{NoiseFn, Perlin};
 use std::rc::Rc;
 type Vec3f = Vector3<f32>;
 
@@ -20,7 +20,7 @@ pub enum DistanceFieldEnum {
 }
 
 pub trait DistanceField {
-    fn distance(&self, pos: Vec3f) -> f32 {
+    fn distance(&self, _pos: Vec3f) -> f32 {
         return f32::INFINITY;
     }
 }
@@ -140,7 +140,7 @@ impl Gradient {
         let l2 = (self.p1 - self.p2).norm_squared();
         let f = (self.p2 - self.p1).dot(&pt2) / l2;
         let mut colorbase = self.inner.distance_color(p).1;
-        let mut color = rgba_interp(self.c1, self.c2, f);
+        let color = rgba_interp(self.c1, self.c2, f);
         colorbase.blend(&color);
         colorbase.blend(&color);
         return colorbase;
@@ -194,7 +194,7 @@ impl Noise {
         let n3 = self
             .noise
             .get([pos3.x as f64, pos3.y as f64, pos3.z as f64]);
-        let mut color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
+        let color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
         if color[3] < 255 {
             let mut colorbase = self.inner.distance_color(pos).1;
 
@@ -314,7 +314,7 @@ impl DistanceFieldEnum {
                 let right_opt = add.right.optimized_for_block(block_center, size);
                 let left_d = left_opt.distance(block_center);
                 let right_d = right_opt.distance(block_center);
-                if (left_d > right_d + size * sqrt_3) {
+                if left_d > right_d + size * sqrt_3 {
                     return right_opt;
                 }
                 if right_d > left_d + size * sqrt_3 {

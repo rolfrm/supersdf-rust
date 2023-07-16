@@ -3,29 +3,29 @@ mod sdf;
 mod sdf_mesh;
 mod triangle_raster;
 
-use kiss3d::camera::{ArcBall, Camera, FirstPerson};
+use kiss3d::camera::{ArcBall, Camera};
 use kiss3d::event::{Action, MouseButton, WindowEvent};
-use noise::{NoiseFn, Perlin};
+
 
 use kiss3d::resource::TextureManager;
 use sdf::*;
 use sdf_mesh::*;
-use std::cell::RefCell;
-use std::collections::hash_map::Entry;
+
+
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use kiss3d::light::Light;
 use kiss3d::scene::SceneNode;
 
-use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
-use kiss3d::nalgebra as na;
+use image::{Rgba};
+
 use kiss3d::nalgebra::{
-    DimDiv, DimMul, Matrix, Point2, Point3, Translation3, UnitQuaternion, Vector2, Vector3, Vector4,
+    Point2, Point3, Vector2, Vector3,
 };
 use kiss3d::window::{State, Window};
 
-use crate::triangle_raster::Triangle;
+
 
 type Vec3f = Vector3<f32>;
 type Vec3 = Vec3f;
@@ -57,12 +57,12 @@ impl SdfScene {
         p: Vec3f,
         size: f32,
         sdf: &DistanceFieldEnum,
-        block_size: f32,
+        _block_size: f32,
     ) {
         self.render_blocks.push((p, size, key, sdf.clone()));
     }
 
-    fn skip_block(&self, p: Vec3, size: f32) -> bool {
+    fn skip_block(&self, _p: Vec3, _size: f32) -> bool {
         false
     }
 
@@ -206,7 +206,7 @@ impl State for AppState {
                     let name = format!("{:?}", block.2).to_string();
                     //meshtex.1.save(format!("{}-{}-{}.png", pos.x, pos.y, pos.z));
 
-                    let mut tex2 = self
+                    let tex2 = self
                         .texture_manager
                         .add_image_or_overwrite(meshtex.1, &name);
 
