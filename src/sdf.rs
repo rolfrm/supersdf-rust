@@ -1,11 +1,13 @@
 
 use image::{Rgba, Pixel};
-use kiss3d::nalgebra::{Vector3};
+use kiss3d::nalgebra::{Vector3, Matrix};
 use std::rc::Rc;
 use noise::{Perlin, Simplex, NoiseFn, SuperSimplex};
-
-use crate::Vec3;
+use kiss3d::nalgebra as na;
+use crate::{Vec3};
 type Vec3f = Vector3<f32>;
+
+const sqrt_3 : f32 = 1.73205080757;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum DistanceFieldEnum{
@@ -265,8 +267,34 @@ impl DistanceFieldEnum{
         }
     }
 
+    pub fn optimized_for_block(&self, block_center : Vec3f, size: f32) -> DistanceFieldEnum{
+        match self {
+            DistanceFieldEnum::Add(add) => {
+                let left_opt = add.left.optimized_for_block(block_center, size);
+                let right_opt = add.right.optimized_for_block(block_center, size);
+                let left_d = left_opt.distance(block_center);
+                let right_d = right_opt.distance(block_center);
+                if(left_d > right_d + size * sqrt_3){
+                    
+                    return right_opt;
+                }
+                if right_d > left_d + size * sqrt_3 {
+                    return left_opt;
+                }
+                return Add::new(left_opt, right_opt).into();
+            },
+            _ => {
+                return self.clone()
+            }}
+
+        }
+
+
     pub fn distance_and_optiomize(&self, pos: Vec3f, size: f32) -> (f32, DistanceFieldEnum) {
-        return (self.distance(pos), self.clone());
+        let pos2 = na::Matrix::map(&pos, |x| f32::floor(x / 25.0) * 25.0);
+        let sdf2 = self.optimized_for_block(pos2 + Vec3::new(size * 0.5, size * 0.5, size * 0.5), size);
+        println!("Optimized: {:?}", sdf2);
+        return (self.distance(pos), sdf2);
     }
 
     pub fn Insert(&self, sdf : DistanceFieldEnum) -> DistanceFieldEnum {
@@ -360,6 +388,4 @@ impl DistanceFieldEnum{
             let x = dv  / l;
             return x;
           }
-    
-
-}
+        }

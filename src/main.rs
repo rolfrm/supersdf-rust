@@ -19,7 +19,8 @@ use kiss3d::light::Light;
 use kiss3d::scene::SceneNode;
 
 use kiss3d::window::{State, Window};
-use kiss3d::nalgebra::{UnitQuaternion, Vector3, Translation3, Vector2, Point3, DimMul, Vector4, DimDiv, Point2};
+use kiss3d::nalgebra::{UnitQuaternion, Vector3, Translation3, Vector2, Point3, DimMul, Vector4, DimDiv, Point2, Matrix};
+use kiss3d::nalgebra as na;
 use image::{Rgba, ImageBuffer, RgbaImage, DynamicImage};
 
 use crate::triangle_raster::Triangle;
@@ -47,7 +48,7 @@ struct SdfScene {
     sdf : DistanceFieldEnum,
     eye_pos: Vec3f,
     block_size: f32,
-    render_blocks : Vec<(Vec3f, f32, SdfKey)>
+    render_blocks : Vec<(Vec3f, f32, SdfKey, DistanceFieldEnum)>
 }
 
 
@@ -55,7 +56,7 @@ struct SdfScene {
 const sqrt_3 : f32 = 1.73205080757;
 impl SdfScene {
     fn callback(&mut self, key : SdfKey, p : Vec3f, size: f32, sdf: &DistanceFieldEnum, block_size : f32 ){
-        self.render_blocks.push((p, size, key));
+        self.render_blocks.push((p, size, key, sdf.clone()));
     }
 
     fn skip_block(&self, p: Vec3, size: f32) -> bool {
@@ -116,9 +117,10 @@ impl SdfScene {
          }
        }
        
+
 struct AppState {
         sdf_iterator : SdfScene,
-        nodes: HashMap<SdfKey, SceneNode>,
+        nodes: HashMap<SdfKey, (SceneNode, DistanceFieldEnum)>,
         texture_manager : TextureManager,
         cursor_pos: Vec2,
         camera : ArcBall
@@ -180,8 +182,11 @@ impl State for AppState {
             }
         }
 
+        let centerpos = self.camera.at().coords
+            .map(|x| f32::floor(x / 25.0) * 25.0);
+
         //self.c.prepend_to_local_rotation(&self.rot);
-        self.sdf_iterator.iterate_scene(self.sdf_iterator.eye_pos, 10.0);
+        self.sdf_iterator.iterate_scene(centerpos, 100.0);
         for block in &self.sdf_iterator.render_blocks {
             self.nodes.entry(block.2).or_insert_with(||{
                 println!("Node at: {:?}", block);
@@ -190,7 +195,7 @@ impl State for AppState {
 
                 let mut r = VertexesList::new();
                 
-                marching_cubes_sdf(&mut r, &self.sdf_iterator.sdf, block.0,  size, 0.2);
+                marching_cubes_sdf(&mut r, &block.3, block.0,  size, 0.2);
                 println!("Mc done: {:?}", r.any());
                 if r.any() {
                 let meshtex = r.to_mesh(&self.sdf_iterator.sdf);  
@@ -204,9 +209,9 @@ impl State for AppState {
                 let mut node = win.add_mesh(Rc::new(meshtex.0.into()), Vec3f::new(1.0, 1.0, 1.0));
                 node.set_texture(tex2);
                 println!("Builrt node!");
-                return node;
+                return (node, block.3.clone());
                 }else{
-                    return win.add_group();
+                    return (win.add_group(), block.3.clone());
                 }
             });
         }
