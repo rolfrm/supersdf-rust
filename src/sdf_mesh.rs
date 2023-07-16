@@ -26,6 +26,10 @@ impl VertexesList {
         VertexesList { verts: Vec::new() }
     }
 
+    pub fn len(&self) -> usize {
+        self.verts.len()
+    }
+
     pub fn any(&self) -> bool {
         self.verts.len() > 0
     }
@@ -121,7 +125,7 @@ impl VertexesList {
         let fw = 1.0 / (columns as f64);
         let fh = 1.0 / (rows as f64);
 
-        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(1024, 1024);
+        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(512, 512);
         let pxmargin = 3;
         let uvmargin = (1.0 + rows as f64) * (pxmargin as f64) / (buf.width() as f64);
         let bufsize: kiss3d::nalgebra::Matrix<
@@ -163,6 +167,7 @@ impl VertexesList {
             coords.push(v.clone().into());
             uvs.push(uv);
             face[faceit] = it;
+
             it += 1;
             faceit += 1;
             if faceit == 3 {
@@ -194,8 +199,8 @@ impl VertexesList {
                     let px2 = Vec2::new(x as f32, y as f32) + Vec2::new(0.5, 0.5);
                     let v0 = interpolate_vec2(pa, pb, pc, va, vb, vc, px2);
 
-                    let dc = df.distance_color(v0);
                     if x < buf.width() && y < buf.height() {
+                        let dc = df.distance_color(v0);
                         buf.put_pixel(x, y, dc.1);
                     }
                 });

@@ -12,7 +12,8 @@ use sdf::*;
 use sdf_mesh::*;
 
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::os::unix::prelude::OsStringExt;
 use std::rc::Rc;
 
 use kiss3d::light::Light;
@@ -24,8 +25,6 @@ use kiss3d::nalgebra::{
     Point2, Point3, Vector2, Vector3,
 };
 use kiss3d::window::{State, Window};
-
-
 
 type Vec3f = Vector3<f32>;
 type Vec3 = Vec3f;
@@ -46,7 +45,7 @@ struct SdfScene {
     sdf: DistanceFieldEnum,
     eye_pos: Vec3f,
     block_size: f32,
-    render_blocks: Vec<(Vec3f, f32, SdfKey, DistanceFieldEnum)>,
+    render_blocks: Vec<(Vec3f, f32, SdfKey, DistanceFieldEnum, f32)>,
 }
 
 const sqrt_3: f32 = 1.73205080757;
@@ -58,8 +57,9 @@ impl SdfScene {
         size: f32,
         sdf: &DistanceFieldEnum,
         _block_size: f32,
+        scale: f32
     ) {
-        self.render_blocks.push((p, size, key, sdf.clone()));
+        self.render_blocks.push((p, size, key, sdf.clone(), scale));
     }
 
     fn skip_block(&self, _p: Vec3, _size: f32) -> bool {
@@ -71,42 +71,51 @@ impl SdfScene {
         self.iterate_scene_rec(p, size)
     }
 
-    pub fn iterate_scene_rec(&mut self, p: Vec3, size: f32) {
-        let (d, omodel) = self.sdf.distance_and_optiomize(p, size);
-        if d > size * sqrt_3 {
+    // The `iterate_scene_rec` function is a recursive function that works by dividing the scene into cells, and for each cell, it checks 
+    // if it's close enough to the scene, or if it's too small or not, and if so, it skips the current cell. If the cell is relevant, it will
+    // divide it into eight smaller cells and repeat the process.
+    pub fn iterate_scene_rec(&mut self, cell_position: Vec3, cell_size: f32) {
+    
+        // Calculate the SDF distance and check if optimizations can be made for the sdf in a local scope.
+        //let (d, omodel) = (self.sdf.distance(cell_position), self.sdf.clone());
+        let (d, omodel) = self.sdf.distance_and_optiomize(cell_position, cell_size);
+        if d > cell_size * sqrt_3 {
             return;
         }
-        if self.skip_block(p, size) {
+        if cell_size < 0.9 {
             return;
         }
 
-        let d2 = (p - self.eye_pos).norm();
-        let mut block_size = self.block_size;
-        if d2 < 50.0 {
-        } else if d2 < 200.0 {
-            block_size = self.block_size * 2.0;
-        } else if d2 < 500.0 {
-            block_size = self.block_size * 4.0;
-        } else if d2 < 900.0 {
-            block_size = self.block_size * 8.0;
-        } else if d2 < 1500.0 {
-            block_size = self.block_size * 16.0;
-        } else {
-            block_size = self.block_size * 32.0;
+        // future frustum culling.
+        if self.skip_block(cell_position, cell_size) {
+            return;
         }
-        if size <= block_size {
+
+        // Calculate the distance of the cell from the eye position
+        let cell_distance = (cell_position - self.eye_pos).norm();
+        
+        // Calculate the LOD level based on the distance of the cell.
+        let lod_level = (cell_distance * 0.5 / self.block_size).log2().floor().max(0.0);
+        
+        // Calculate the cell size. Farther away -> bigger blocks with lower resolution.
+        let lod_cell_size = self.block_size * 2.0_f32.powf(lod_level);
+
+        // if the size of the current cell is less than the lod cell size
+        if cell_size <= lod_cell_size {
             let key = SdfKey {
-                x: p.x as i32,
-                y: (p.y as i32),
-                z: p.z as i32,
-                w: block_size as i32,
+                x: cell_position.x as i32,
+                y: cell_position.y as i32,
+                z: cell_position.z as i32,
+                w: lod_cell_size as i32,
             };
-            self.callback(key, p, size, &omodel, block_size);
 
+            self.callback(key, cell_position, cell_size, &omodel, cell_size, lod_level);
+            
             return;
         }
 
-        let s2 = size / 2.0;
+        // If the cell is not returned early, then we divide the cell into eight smaller cells and repeat the process for each.
+        let s2 = cell_size / 2.0;
         let o = [-s2, s2];
 
         for i in 0..8 {
@@ -115,7 +124,7 @@ impl SdfScene {
                 o[(i >> 1) & 1] as f32,
                 o[(i >> 2) & 1] as f32,
             );
-            let p = offset + p;
+            let p = offset + cell_position;
             self.iterate_scene_rec(p, s2);
         }
     }
@@ -176,7 +185,15 @@ impl State for AppState {
                     if let Some((_, p)) = col {
                         let newobj = Sphere::new(p, 0.5).color(Rgba([255, 0, 0, 255]));
                         self.sdf_iterator.sdf = self.sdf_iterator.sdf.Insert2(newobj);
+                        
+                        for node in self.nodes.iter_mut() {
+                            let n = &mut node.1.0;    
+                            n.unlink();
+                        }
+                        
                         self.nodes.clear();
+                        
+                        
                     }
                 }
                 WindowEvent::CursorPos(x, y, _) => {
@@ -186,25 +203,38 @@ impl State for AppState {
             }
         }
 
-        let centerpos = self.camera.at().coords.map(|x| f32::floor(x / 25.0) * 25.0);
-
+        let centerpos = self.camera.eye()
+        .coords.map(|x| f32::floor(x / 32.0) * 32.0);
+        self.sdf_iterator.eye_pos = self.camera.eye().to_homogeneous().xyz();
+        
         //self.c.prepend_to_local_rotation(&self.rot);
-        self.sdf_iterator.iterate_scene(centerpos, 100.0);
+        self.sdf_iterator.iterate_scene(centerpos, 256.0);
+
+        for node in self.nodes.iter_mut() {
+            let n = &mut node.1.0;    
+            n.set_visible(false);
+        }
+        
+
         for block in &self.sdf_iterator.render_blocks {
-            self.nodes.entry(block.2).or_insert_with(|| {
+            let nd = self.nodes.entry(block.2).or_insert_with(|| {
                 println!("Node at: {:?}", block);
+
                 let pos = block.2;
                 let size = pos.w as f32;
 
                 let mut r = VertexesList::new();
-
-                marching_cubes_sdf(&mut r, &block.3, block.0, size, 0.2);
-                println!("Mc done: {:?}", r.any());
+                println!("Optimize: {:?}", block.3);
+                let newsdf = block.3.optimized_for_block(block.0, size);
+                println!("Optimized: {:?}", newsdf);
+                println!("Scale: {}", block.4);
+                marching_cubes_sdf(&mut r, &newsdf, block.0, size, 0.2 * 2.0_f32.powf(block.4));
+                
+                println!("Mc done: {:?}", r.len());
                 if r.any() {
-                    let meshtex = r.to_mesh(&self.sdf_iterator.sdf);
+                    let meshtex = r.to_mesh(&newsdf);
 
                     let name = format!("{:?}", block.2).to_string();
-                    //meshtex.1.save(format!("{}-{}-{}.png", pos.x, pos.y, pos.z));
 
                     let tex2 = self
                         .texture_manager
@@ -219,44 +249,19 @@ impl State for AppState {
                     return (win.add_group(), block.3.clone());
                 }
             });
+            nd.0.set_visible(true);
+            
         }
     }
 }
 
+
 fn main() {
-    let aabb2 = Sphere::new(Vec3f::new(2.0, 0.0, 0.0), 1.0).color(Rgba([255, 255, 255, 255]));
-    let grad = Noise::new(
-        1543,
-        Rgba([255, 255, 255, 255]),
-        Rgba([100, 140, 150, 255]),
-        Rc::new(aabb2.into()),
-    );
-
-    let sphere = Sphere::new(Vec3f::new(-2.0, 0.0, 0.0), 2.0).color(Rgba([255, 0, 0, 255]));
-
-    let noise = Noise::new(
-        123,
-        Rgba([95, 155, 55, 255]),
-        Rgba([255, 255, 255, 255]),
-        Rc::new(sphere.into()),
-    );
-
-    let sphere2 = Sphere::new(Vec3f::new(0.0, -200.0, 0.0), 196.0).color(Rgba([255, 0, 0, 255]));
-    let noise2 = Noise::new(
-        123,
-        Rgba([255, 155, 55, 255]),
-        Rgba([100, 100, 100, 255]),
-        Rc::new(sphere2.into()),
-    );
-
-    let sdf = DistanceFieldEnum::Empty {}
-        .Insert2(noise)
-        .Insert2(grad)
-        .Insert2(noise2);
-
+    let sdf = build_test();
     let sdf2 = sdf.optimize_bounds();
+
     let sdf_iterator = SdfScene {
-        sdf: sdf2.clone(),
+        sdf: sdf2,
         eye_pos: Vec3::zeros(),
         block_size: 5.0,
         render_blocks: Vec::new(),
@@ -269,4 +274,32 @@ fn main() {
     let state = AppState::new(sdf_iterator);
 
     window.render_loop(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+    #[test]
+    fn test_optimize_bounds() {
+        let sdf = build_test();
+        let sdf2 = sdf.optimize_bounds();
+    
+        let mut sdf_iterator = SdfScene {
+            sdf: sdf2,
+            eye_pos: Vec3::zeros(),
+            block_size: 4.0,
+            render_blocks: Vec::new(),
+        };
+
+        sdf_iterator.iterate_scene(Vec3::new(0.0, 0.0, 0.0), 64.0);
+        for block in sdf_iterator.render_blocks {
+            println!("{:?}", block.2);
+            
+        }
+    }
+
+
+
 }

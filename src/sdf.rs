@@ -2,7 +2,7 @@ use crate::Vec3;
 use image::{Pixel, Rgba};
 use kiss3d::nalgebra as na;
 use kiss3d::nalgebra::{Vector3};
-use noise::{NoiseFn, Perlin};
+use noise::{NoiseFn, Perlin, Simplex, SuperSimplex};
 use std::rc::Rc;
 type Vec3f = Vector3<f32>;
 
@@ -20,7 +20,7 @@ pub enum DistanceFieldEnum {
 }
 
 pub trait DistanceField {
-    fn distance(&self, _pos: Vec3f) -> f32 {
+    fn distance(&self, pos: Vec3f) -> f32 {
         return f32::INFINITY;
     }
 }
@@ -75,7 +75,7 @@ fn vec3_max(a: Vec3, b: Vec3) -> Vec3 {
 pub struct Aabb {
     radius: Vec3,
     center: Vec3,
-    color: Rgba<u8>,
+    color: Rgba<u8>
 }
 
 impl Aabb {
@@ -140,7 +140,7 @@ impl Gradient {
         let l2 = (self.p1 - self.p2).norm_squared();
         let f = (self.p2 - self.p1).dot(&pt2) / l2;
         let mut colorbase = self.inner.distance_color(p).1;
-        let color = rgba_interp(self.c1, self.c2, f);
+        let mut color = rgba_interp(self.c1, self.c2, f);
         colorbase.blend(&color);
         colorbase.blend(&color);
         return colorbase;
@@ -155,7 +155,7 @@ impl Into<DistanceFieldEnum> for Gradient {
 
 #[derive(Clone, Debug)]
 pub struct Noise {
-    noise: Perlin,
+    noise: Rc<Perlin>,
     seed: u32,
     c1: Rgba<u8>,
     c2: Rgba<u8>,
@@ -171,13 +171,13 @@ impl PartialEq for Noise {
 }
 
 impl Noise {
-    pub fn new(seed: u32, c1: Rgba<u8>, c2: Rgba<u8>, inner: Rc<DistanceFieldEnum>) -> Noise {
+    pub fn new(seed: u32, c1: Rgba<u8>, c2: Rgba<u8>, inner: DistanceFieldEnum) -> Noise {
         Noise {
             seed: seed,
-            noise: Perlin::new(seed),
+            noise: Rc::new(Perlin::new(seed)),
             c1: c1,
             c2: c2,
-            inner: inner,
+            inner: Rc::new(inner),
         }
     }
 
@@ -194,7 +194,7 @@ impl Noise {
         let n3 = self
             .noise
             .get([pos3.x as f64, pos3.y as f64, pos3.z as f64]);
-        let color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
+        let mut color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
         if color[3] < 255 {
             let mut colorbase = self.inner.distance_color(pos).1;
 
@@ -215,7 +215,7 @@ impl Into<DistanceFieldEnum> for Noise {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Add {
     left: Rc<DistanceFieldEnum>,
-    right: Rc<DistanceFieldEnum>,
+    right: Rc<DistanceFieldEnum>
 }
 fn rgba_interp(a: Rgba<u8>, b: Rgba<u8>, v: f32) -> Rgba<u8> {
     Rgba([
@@ -237,16 +237,13 @@ impl Add {
         f32::min(self.left.distance(pos), self.right.distance(pos))
     }
     fn distance_color(&self, p: Vec3f) -> (f32, Rgba<u8>) {
-        let ld = self.left.distance_color(p);
-        let rd = self.right.distance_color(p);
-        if ld.0 < rd.0 {
-            //return (ld.0, rgba_interp(ld.1, rd.1, (ld.0 + 0.1) / (ld.0 + rd.0 + 0.1)));
-
-            return ld;
+        let ld = self.left.distance(p);
+        let rd = self.right.distance(p);
+        if ld < rd {
+            return self.left.distance_color(p);
         }
-        //return (rd.0, rgba_interp(rd.1, ld.1, (rd.0 + 0.1) / (ld.0 + rd.0 + 0.1)));
-
-        return rd;
+        return self.right.distance_color(p);
+        
     }
 }
 
@@ -307,30 +304,57 @@ impl DistanceFieldEnum {
         }
     }
 
+    pub fn optimize_add(add: &Add, block_center: Vec3f, size: f32) -> DistanceFieldEnum {
+        let left_opt = add.left.optimized_for_block(block_center, size);
+        let right_opt = add.right.optimized_for_block(block_center, size);
+        let left_d = left_opt.distance(block_center);
+        let right_d = right_opt.distance(block_center);
+        if left_d > right_d + size * sqrt_3 {
+            return right_opt;
+        }
+        if right_d > left_d + size * sqrt_3 {
+            return left_opt;
+        }
+        if left_opt.eq(&add.left) && right_opt.eq(&add.right) {
+            let add2 = add.clone();
+            //println!("Reuse! {}", Rc::strong_count(&add2.left));
+            return DistanceFieldEnum::Add(add2);
+        }
+        return Add::new(left_opt, right_opt).into();
+    }
+
     pub fn optimized_for_block(&self, block_center: Vec3f, size: f32) -> DistanceFieldEnum {
         match self {
             DistanceFieldEnum::Add(add) => {
-                let left_opt = add.left.optimized_for_block(block_center, size);
-                let right_opt = add.right.optimized_for_block(block_center, size);
-                let left_d = left_opt.distance(block_center);
-                let right_d = right_opt.distance(block_center);
-                if left_d > right_d + size * sqrt_3 {
-                    return right_opt;
+                DistanceFieldEnum::optimize_add(add, block_center,size)
+            },
+            DistanceFieldEnum::BoundsAdd(add, bounds) => {
+                let bounds_d = bounds.distance(block_center);
+                if bounds_d < size * sqrt_3 {
+                    let r = DistanceFieldEnum::optimize_add(add, block_center, size);
+                    match r {
+                        DistanceFieldEnum::Add(add) =>
+                            DistanceFieldEnum::BoundsAdd(add, bounds.clone()),
+                        _ =>
+                        r
+
+                    }
+                    
+                }else{
+                    self.clone()
                 }
-                if right_d > left_d + size * sqrt_3 {
-                    return left_opt;
-                }
-                return Add::new(left_opt, right_opt).into();
+
             }
+            
             _ => return self.clone(),
         }
     }
 
     pub fn distance_and_optiomize(&self, pos: Vec3f, size: f32) -> (f32, DistanceFieldEnum) {
-        let pos2 = na::Matrix::map(&pos, |x| f32::floor(x / 25.0) * 25.0);
+        let pos2 = na::Matrix::map(&pos, |x| f32::floor(x / size) * size);
         let sdf2 =
             self.optimized_for_block(pos2 + Vec3::new(size * 0.5, size * 0.5, size * 0.5), size);
-        println!("Optimized: {:?}", sdf2);
+        
         return (self.distance(pos), sdf2);
     }
 
@@ -426,4 +450,69 @@ impl DistanceFieldEnum {
         let x = dv / l;
         return x;
     }
+}
+
+
+pub fn build_test() -> DistanceFieldEnum {
+    let aabb2 = Sphere::new(Vec3f::new(2.0, 0.0, 0.0), 1.0).color(Rgba([255, 255, 255, 255]));
+    let grad = Noise::new(
+        1543,
+        Rgba([255, 255, 255, 255]),
+        Rgba([100, 140, 150, 255]),
+        aabb2.into(),
+    );
+
+    let sphere = Sphere::new(Vec3f::new(-2.0, 0.0, 0.0), 2.0).color(Rgba([255, 0, 0, 255]));
+
+    let noise = Noise::new(
+        123,
+        Rgba([95, 155, 55, 255]),
+        Rgba([255, 255, 255, 255]),
+        sphere.into(),
+    );
+
+    let sphere2 = Sphere::new(Vec3f::new(0.0, -200.0, 0.0), 190.0).color(Rgba([255, 0, 0, 255]));
+    let noise2 = Noise::new(
+        123,
+        Rgba([255, 155, 55, 255]),
+        Rgba([100, 100, 100, 255]),
+        sphere2.into(),
+    );
+
+    let sdf = DistanceFieldEnum::Empty {}
+        .Insert2(noise)
+        .Insert2(grad)
+        .Insert2(noise2);
+    return sdf;
+
+    
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+    #[test]
+    fn test_optimize_bounds() {
+        let sdf = build_test();
+
+        let opt = sdf.optimize_bounds();
+        
+        let pt = Vec3::new(0.0, 0.0, 0.0);
+
+        let a = sdf.distance(pt);
+        let b = opt.distance(pt);
+        assert_eq!(a, b);
+        println!("Optimal!");
+        println!("{:?}", opt);
+    }
+
+    #[test]
+    fn test_optimal_ray() {
+        let sdf = build_test();
+
+    }
+
+
 }
