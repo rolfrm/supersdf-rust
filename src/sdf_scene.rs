@@ -1,8 +1,7 @@
-use crate::{mc, sdf, triangle_raster};
-use mc::*;
+use crate::{sdf};
 use sdf::*;
 
-use kiss3d::nalgebra::{Const, OPoint, Point2, Point3, Vector2, Vector3};
+use kiss3d::nalgebra::{Vector3, Vector2};
 
 type Vec3f = Vector3<f32>;
 type Vec3 = Vec3f;
