@@ -3,7 +3,6 @@ use crate::{mc, sdf, triangle_raster};
 use std::collections::HashMap;
 
 use kiss3d::{
-    nalgebra::ComplexField,
     resource::{Mesh},
 };
 use mc::*;
