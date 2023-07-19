@@ -24,6 +24,11 @@ pub struct SdfScene {
 
 const sqrt_3: f32 = 1.73205080757;
 impl SdfScene {
+
+    pub fn new(sdf : DistanceFieldEnum) -> SdfScene {
+        SdfScene { sdf: sdf, eye_pos: Vec3::zeros(), block_size: 5.0, render_blocks: Vec::new() }
+    } 
+
     fn callback(
         &mut self,
         key: SdfKey,
@@ -102,4 +107,33 @@ impl SdfScene {
             self.iterate_scene_rec(p, s2);
         }
     }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+    #[test]
+    fn test_optimize_bounds() {
+        let sdf = build_test();
+        let sdf2 = sdf.optimize_bounds();
+    
+        let mut sdf_iterator = SdfScene {
+            sdf: sdf2,
+            eye_pos: Vec3::zeros(),
+            block_size: 2.0,
+            render_blocks: Vec::new(),
+        };
+
+        sdf_iterator.iterate_scene(Vec3::new(0.0, 0.0, 0.0), 64.0);
+        for block in sdf_iterator.render_blocks {
+            println!("{:?}", block.2);
+            
+        }
+    }
+
+
+
 }

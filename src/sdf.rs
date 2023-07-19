@@ -1,10 +1,10 @@
-use crate::Vec3;
 use image::{Pixel, Rgba};
 use kiss3d::nalgebra as na;
 use kiss3d::nalgebra::{Vector3};
-use noise::{NoiseFn, Perlin, Simplex, SuperSimplex};
+use noise::{NoiseFn, Perlin};//, Simplex, SuperSimplex};
 use std::rc::Rc;
-type Vec3f = Vector3<f32>;
+type Vec3 = Vector3<f32>;
+type Vec3f = Vec3;
 
 const sqrt_3: f32 = 1.73205080757;
 

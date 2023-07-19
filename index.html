@@ -18,11 +18,11 @@
 		<canvas oncontextmenu="return false;" id="canvas"></canvas>
 		<canvas id="canvas"></canvas>
         <script type="module">
-            import init, {add, main} from './pkg/supersdf.js';
+            import init, {/*add, */main} from './pkg/supersdf.js';
             async function run(){
 				await init()
-				let result = add(1,2);
-				console.log(`finished: ${result}`);
+				//let result = add(1,2);
+				//console.log(`finished: ${result}`);
 				main()
 			}
 			run()
