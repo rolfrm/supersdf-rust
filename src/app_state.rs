@@ -63,9 +63,11 @@ impl State for AppState {
                             .cast_ray(Vec3::new(at.x, at.y, at.z), unp.1, 1000.0);
 
                     if let Some((_, p)) = col {
-                        let newobj = Sphere::new(p, 0.5).color(Rgba([255, 0, 0, 255]));
-                        self.sdf_iterator.sdf = self.sdf_iterator.sdf.Insert2(newobj).optimize_bounds();
+                        let newobj = Sphere::new(p, 2.0).color(Rgba([255, 0, 0, 255]));
+                        //self.sdf_iterator.sdf = self.sdf_iterator.sdf.Insert2(newobj).optimize_bounds();
                         
+                        let sub = Subtract::new(self.sdf_iterator.sdf.clone(), newobj, 0.0);
+                        self.sdf_iterator.sdf = sub.into();
                         //for node in self.nodes.iter_mut() {
                         //    let n = &mut node.1.0;    
                         //    n.unlink();

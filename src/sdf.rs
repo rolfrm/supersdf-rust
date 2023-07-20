@@ -16,6 +16,7 @@ pub enum DistanceFieldEnum {
     BoundsAdd(Add, Sphere),
     Gradient(Gradient),
     Noise(Noise),
+    Subtract(Subtract),
     Empty,
 }
 
@@ -262,6 +263,7 @@ impl DistanceField for DistanceFieldEnum {
     fn distance(&self, pos: Vec3f) -> f32 {
         match self {
             DistanceFieldEnum::Add(add) => add.distance(pos),
+            DistanceFieldEnum::Subtract(sub) => sub.distance(pos),
             DistanceFieldEnum::Sphere(sphere) => sphere.distance(pos),
             DistanceFieldEnum::Aabb(aabb) => aabb.distance(pos),
             DistanceFieldEnum::Empty => f32::INFINITY,
@@ -284,6 +286,37 @@ impl DistanceField for Add {
     }
 }
 
+#[derive(Clone, PartialEq, Debug)]
+pub struct Subtract {
+     left : Rc<DistanceFieldEnum>,
+     right: Rc<DistanceFieldEnum>,
+     k : f32
+}
+
+fn f32mixf( x : f32,  y : f32,  a : f32) -> f32 { x * (1.0 - a) + y * a }
+
+impl DistanceField for Subtract {
+    fn distance(&self, pos : Vec3f) -> f32 {
+    let k = self.k;
+    let d1 = self.left.distance(pos);
+    let d2 = self.right.distance(pos);
+    let h = f32::clamp(0.5 - 0.5 * (d2 + d1) / k, 0.0, 1.0);
+    
+    let r = f32mixf(d1, -d2, h) + k * h * (1.0 - h);
+    return r;
+    }
+}
+
+impl Subtract {
+    pub fn new<T : Into<DistanceFieldEnum>, T2 : Into<DistanceFieldEnum>>(left : T, right : T2, k : f32) -> Subtract {
+        Subtract { left: Rc::new(left.into()), right: Rc::new(right.into()), k: k }
+    }
+}
+impl Into<DistanceFieldEnum> for Subtract {
+    fn into(self) -> DistanceFieldEnum {
+        DistanceFieldEnum::Subtract(self)
+    }
+}
 impl DistanceFieldEnum {
     pub fn cast_ray(&self, pos: Vec3f, dir: Vec3f, max_dist: f32) -> Option<(f32, Vec3f)> {
         let mut total_distance = 0.0;
@@ -328,6 +361,19 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Add(add) => {
                 DistanceFieldEnum::optimize_add(add, block_center,size)
             },
+            DistanceFieldEnum::Subtract(sub) => {
+                let right_d = sub.right.distance(block_center);
+                let left2 = sub.left.optimized_for_block(block_center, size);
+                if right_d > size * sqrt_3 {
+                    return left2;
+                }
+                if left2.eq(&sub.left) {
+                    return DistanceFieldEnum::Subtract(sub.clone());
+                }
+                DistanceFieldEnum::Subtract( Subtract {left : Rc::new(left2), right: sub.right.clone(), k: sub.k}).into()
+                
+            }
+
             DistanceFieldEnum::BoundsAdd(add, bounds) => {
                 let bounds_d = bounds.distance(block_center);
                 if bounds_d < size * sqrt_3 {
@@ -381,7 +427,8 @@ impl DistanceFieldEnum {
                 let right = add.right.CalculateSphereBounds();
 
                 Sphere::two_sphere_bounds(&left, &right)
-            }
+            },
+            DistanceFieldEnum::Subtract(sub) => sub.left.CalculateSphereBounds()
         }
     }
 
@@ -422,6 +469,7 @@ impl DistanceFieldEnum {
                 (gradient.inner.distance(pos), gradient.color(pos))
             }
             DistanceFieldEnum::Noise(noise) => (noise.inner.distance(pos), noise.color(pos)),
+            DistanceFieldEnum::Subtract(sub) => (sub.distance(pos), sub.left.distance_color(pos).1)
         }
     }
 
