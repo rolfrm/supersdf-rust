@@ -3,7 +3,7 @@ use crate::{mc, sdf, triangle_raster};
 use std::collections::HashMap;
 
 use kiss3d::{
-    resource::{Mesh},
+    resource::{Mesh}, nalgebra::{DimNameMin, RealField},
 };
 use mc::*;
 use sdf::*;
@@ -106,9 +106,15 @@ impl VecKey for Vec3 {
         )
     }
 }
+fn vec3f_min(v1 : Vec3f, v2 : Vec3f) -> Vec3f {
+    Vec3f::new(f32::min(v1.x, v2.x), f32::min(v1.y, v2.y), f32::min(v1.z, v2.z))
+}
+fn vec3f_max(v1 : Vec3f, v2 : Vec3f) -> Vec3f {
+    Vec3f::new(f32::max(v1.x, v2.x), f32::max(v1.y, v2.y), f32::max(v1.z, v2.z))
+}
 
 impl VertexesList {
-    pub fn to_mesh(&self, df: &DistanceFieldEnum) -> (Mesh, DynamicImage) {
+    pub fn to_mesh(&self, sdf: &DistanceFieldEnum) -> (Mesh, DynamicImage) {
         let mut coords: Vec<Point3<f32>> = Vec::new();
         let mut faces = Vec::new();
         let mut uvs = Vec::new();
@@ -134,21 +140,29 @@ impl VertexesList {
             kiss3d::nalgebra::ArrayStorage<f32, 2, 1>,
         > = Vec2::new(buf.width() as f32, buf.height() as f32);
         let mut dict: HashMap<Vector3<i32>, i32> = HashMap::new();
+        let mut max = Vec3f::new(-100000.0, -100000.0, -100000.0);
+        let mut min = Vec3f::new(-100000.0, -100000.0, -100000.0);
 
         for v in &self.verts {
+            min = vec3f_min(min, *v);
+            max = vec3f_max(max, *v);
             let key = v.key();
 
             if dict.contains_key(&key) {
                 dict.insert(key, dict.len() as i32);
             }
         }
+        let mid = (max + min) * 0.5;
+        let size = (max - min).norm() * 0.5;
+        let sdf = sdf.optimized_for_block(mid, size);
+
         for v in &self.verts {
             let facei: i64 = faces.len() as i64;
             let row = (facei / columns) as f64;
             let col = (facei % columns) as f64;
             let rowf = row / (columns as f64);
             let colf = col / (columns as f64);
-            let normal = df.gradient(*v, 0.001);
+            let normal = sdf.gradient(*v, 0.001);
             normals.push(normal);
 
             let uv = Point2::new(
@@ -191,7 +205,12 @@ impl VertexesList {
                     pb + Vec2::new(2.0, -2.0),
                     pc + Vec2::new(-2.0, 2.0),
                 );
-
+                let min2 = vec3f_min(va, vec3f_min(vb, vc));
+                let max2 = vec3f_max(va, vec3f_max(vb, vc));
+                let mid2 = (max2 + min2) * 0.5;
+                let size2 = (max2 - min2).norm() * 0.5;
+                let sdf2 = sdf.optimized_for_block(mid2, size2);
+                
                 iter_triangle(&trig, |pixel| {
                     let x = pixel.x as u32;
                     let y = pixel.y as u32;
@@ -199,8 +218,8 @@ impl VertexesList {
                     let v0 = interpolate_vec2(pa, pb, pc, va, vb, vc, px2);
 
                     if x < buf.width() && y < buf.height() {
-                        let dc = df.distance_color(v0);
-                        buf.put_pixel(x, y, dc.1);
+                        let dc = sdf2.color(v0);
+                        buf.put_pixel(x, y, dc);
                     }
                 });
             }

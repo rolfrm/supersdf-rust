@@ -140,7 +140,7 @@ impl Gradient {
         let pt2 = p - self.p1;
         let l2 = (self.p1 - self.p2).norm_squared();
         let f = (self.p2 - self.p1).dot(&pt2) / l2;
-        let mut colorbase = self.inner.distance_color(p).1;
+        let mut colorbase = self.inner.color(p);
         let mut color = rgba_interp(self.c1, self.c2, f);
         colorbase.blend(&color);
         colorbase.blend(&color);
@@ -197,10 +197,8 @@ impl Noise {
             .get([pos3.x as f64, pos3.y as f64, pos3.z as f64]);
         let mut color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
         if color[3] < 255 {
-            let mut colorbase = self.inner.distance_color(pos).1;
-
+            let mut colorbase = self.inner.color(pos);
             colorbase.blend(&color);
-            //color.blend(&colorbase);
             return colorbase;
         }
         return color;
@@ -237,13 +235,14 @@ impl Add {
     fn distance(&self, pos: Vec3f) -> f32 {
         f32::min(self.left.distance(pos), self.right.distance(pos))
     }
-    fn distance_color(&self, p: Vec3f) -> (f32, Rgba<u8>) {
+
+    fn color(&self, p: Vec3f) -> Rgba<u8> {
         let ld = self.left.distance(p);
         let rd = self.right.distance(p);
         if ld < rd {
-            return self.left.distance_color(p);
+            return self.left.color(p);
         }
-        return self.right.distance_color(p);
+        return self.right.color(p);
         
     }
 }
@@ -417,21 +416,21 @@ impl DistanceFieldEnum {
         self.Insert(sdf.into())
     }
 
-    pub fn CalculateSphereBounds(&self) -> Sphere {
+    pub fn calculate_sphere_bounds(&self) -> Sphere {
         match self {
             DistanceFieldEnum::Sphere(sphere) => sphere.clone(),
             DistanceFieldEnum::Aabb(aabb) => Sphere::new(aabb.center, aabb.radius.norm()),
             DistanceFieldEnum::BoundsAdd(_, sphere) => sphere.clone(),
             DistanceFieldEnum::Empty => Sphere::new(Vec3f::zeros(), f32::INFINITY),
-            DistanceFieldEnum::Gradient(gradient) => gradient.inner.CalculateSphereBounds(),
-            DistanceFieldEnum::Noise(noise) => noise.inner.CalculateSphereBounds(),
+            DistanceFieldEnum::Gradient(gradient) => gradient.inner.calculate_sphere_bounds(),
+            DistanceFieldEnum::Noise(noise) => noise.inner.calculate_sphere_bounds(),
             DistanceFieldEnum::Add(add) => {
-                let left = add.left.CalculateSphereBounds();
-                let right = add.right.CalculateSphereBounds();
+                let left = add.left.calculate_sphere_bounds();
+                let right = add.right.calculate_sphere_bounds();
 
                 Sphere::two_sphere_bounds(&left, &right)
             },
-            DistanceFieldEnum::Subtract(sub) => sub.left.CalculateSphereBounds()
+            DistanceFieldEnum::Subtract(sub) => sub.left.calculate_sphere_bounds()
         }
     }
 
@@ -440,8 +439,8 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Add(add) => {
                 let left = add.left.optimize_bounds();
                 let right = add.right.optimize_bounds();
-                let leftbounds = left.CalculateSphereBounds();
-                let rightbounds = right.CalculateSphereBounds();
+                let leftbounds = left.calculate_sphere_bounds();
+                let rightbounds = right.calculate_sphere_bounds();
                 let bounds = Sphere::two_sphere_bounds(&leftbounds, &rightbounds);
 
                 let same = add.left.as_ref().eq(&left) && add.right.as_ref().eq(&right);
@@ -455,24 +454,23 @@ impl DistanceFieldEnum {
         }
     }
 
-    pub fn distance_color(&self, pos: Vec3f) -> (f32, Rgba<u8>) {
+    pub fn color(&self, pos: Vec3f) -> Rgba<u8> {
         match self {
-            DistanceFieldEnum::Add(add) => add.distance_color(pos),
-            DistanceFieldEnum::Sphere(sphere) => (sphere.distance(pos), sphere.color),
-            DistanceFieldEnum::Aabb(aabb) => (aabb.distance(pos), aabb.color),
-            DistanceFieldEnum::Empty => (f32::INFINITY, Rgba([0, 0, 0, 0])),
+            DistanceFieldEnum::Add(add) => add.color(pos),
+            DistanceFieldEnum::Sphere(sphere) => sphere.color,
+            DistanceFieldEnum::Aabb(aabb) => aabb.color,
+            DistanceFieldEnum::Empty => Rgba([0, 0, 0, 0]),
             DistanceFieldEnum::BoundsAdd(add, bounds) => {
                 let d1 = bounds.distance(pos);
                 if d1 > bounds.radius * 0.5 {
-                    return (d1, Rgba([0, 0, 0, 0]));
+                    return Rgba([0, 0, 0, 0]);
                 }
-                add.distance_color(pos)
+                add.color(pos)
             }
-            DistanceFieldEnum::Gradient(gradient) => {
-                (gradient.inner.distance(pos), gradient.color(pos))
-            }
-            DistanceFieldEnum::Noise(noise) => (noise.inner.distance(pos), noise.color(pos)),
-            DistanceFieldEnum::Subtract(sub) => (sub.distance(pos), sub.left.distance_color(pos).1)
+            DistanceFieldEnum::Gradient(gradient) => gradient.color(pos),
+            
+            DistanceFieldEnum::Noise(noise) => noise.color(pos),
+            DistanceFieldEnum::Subtract(sub) => sub.left.color(pos)
         }
     }
 
