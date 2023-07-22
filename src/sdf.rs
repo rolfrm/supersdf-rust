@@ -1,7 +1,9 @@
 use image::{Pixel, Rgba};
 use kiss3d::nalgebra as na;
 use kiss3d::nalgebra::{Vector3};
-use noise::{NoiseFn, Perlin};//, Simplex, SuperSimplex};
+use noise::{NoiseFn, Perlin};
+use std::f32::consts::PI;
+//, Simplex, SuperSimplex};
 use std::rc::Rc;
 type Vec3 = Vector3<f32>;
 type Vec3f = Vec3;
@@ -51,7 +53,14 @@ impl Sphere {
     }
 
     pub fn two_sphere_bounds(a: &Sphere, b: &Sphere) -> Sphere {
-        let r2ld = (a.center - b.center).normalize();
+        let n2 = (a.center - b.center).norm();
+        if(n2 <= 0.000001){
+            return match a.radius < b.radius{
+                true => b,
+                false => a
+            }.clone();
+        }
+        let r2ld = (a.center - b.center) / n2;
         let leftext = a.center + r2ld * a.radius;
         let rightext = b.center - r2ld * b.radius;
 
@@ -59,6 +68,10 @@ impl Sphere {
         let radius = (leftext - rightext).norm() * 0.5;
 
         return Sphere::new(center, radius);
+    }
+
+    fn volume(&self) -> f32 { 
+        (4.0 / 3.0) * PI * self.radius.powf(3.0)
     }
 }
 
@@ -398,7 +411,7 @@ impl DistanceFieldEnum {
         }
     }
 
-    pub fn distance_and_optiomize(&self, pos: Vec3f, size: f32) -> (f32, DistanceFieldEnum) {
+    pub fn distance_and_optimize(&self, pos: Vec3f, size: f32) -> (f32, DistanceFieldEnum) {
         let pos2 = na::Matrix::map(&pos, |x| f32::floor(x / size) * size);
         let sdf2 =
             self.optimized_for_block(pos2 + Vec3::new(size * 0.5, size * 0.5, size * 0.5), size);
@@ -412,8 +425,28 @@ impl DistanceFieldEnum {
             _ => Add::new(self.clone(), sdf).into(),
         }
     }
-    pub fn Insert2<T: Into<DistanceFieldEnum>>(&self, sdf: T) -> DistanceFieldEnum {
-        self.Insert(sdf.into())
+    pub fn insert_2<T: Into<DistanceFieldEnum>>(&self, sdf: T) -> DistanceFieldEnum {
+        let esdf : DistanceFieldEnum= sdf.into();
+        let esdfs = esdf.calculate_sphere_bounds();
+        match self {
+            DistanceFieldEnum::Add(add) => {
+                let l0 = add.left.calculate_sphere_bounds().center;
+                let l1 = add.right.calculate_sphere_bounds().center;
+                let l3 = (l0 - l1).norm();
+
+                let d1 = add.left.distance(esdfs.center);
+                let d2 = add.right.distance(esdfs.center);
+                
+                if d1 < d2 && d1 < l3 {
+                    return Add{ left : Rc::new(add.left.insert_2(esdf.clone())), right: add.right.clone()}.into();
+                }else if(d2 < d1 && d2 < l3){
+                    return Add{ right : Rc::new(add.right.insert_2(esdf)), left: add.left.clone()}.into();
+                }
+                return self.Insert(esdf.clone());
+            },
+            _ => self.Insert(esdf)
+        }
+
     }
 
     pub fn calculate_sphere_bounds(&self) -> Sphere {
@@ -529,9 +562,9 @@ pub fn build_test() -> DistanceFieldEnum {
     );
 
     let sdf = DistanceFieldEnum::Empty {}
-        .Insert2(noise)
-        .Insert2(grad)
-        .Insert2(noise2);
+        .insert_2(noise)
+        .insert_2(grad)
+        .insert_2(noise2);
     return sdf;
 
     
@@ -540,18 +573,26 @@ pub fn build_test() -> DistanceFieldEnum {
 
 pub fn build_test2() -> DistanceFieldEnum {
     let mut sdf  = DistanceFieldEnum::Empty;
-    for x in 0..10 {
-        for y in 0..10 {
-            for z in 0..10 {
+    for x in 0..3 {
+        for y in 0..3 {
+            for z in (0..3) {
                 let sphere = Sphere::new(Vec3f::new(x as f32* 5.0, y as f32* 5.0, z as f32 * 5.0), 2.0).color(Rgba([255, 0, 0, 255]));
-                sdf = sdf.Insert2(sphere);
+                sdf = sdf.insert_2(sphere);
             }
         }
     }
     
     return sdf;
+}
 
+pub fn build_test3() -> DistanceFieldEnum {
+    let mut sdf  = DistanceFieldEnum::Empty;
+    sdf = sdf.insert_2(Sphere::new(Vec3f::new(0.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
+    sdf = sdf.insert_2(Sphere::new(Vec3f::new(5.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
+    sdf = sdf.insert_2(Sphere::new(Vec3f::new(1.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
+    sdf = sdf.insert_2(Sphere::new(Vec3f::new(6.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
     
+    return sdf;
 }
 
 

@@ -26,7 +26,7 @@ const sqrt_3: f32 = 1.73205080757;
 impl SdfScene {
 
     pub fn new(sdf : DistanceFieldEnum) -> SdfScene {
-        SdfScene { sdf: sdf, eye_pos: Vec3::zeros(), block_size: 5.0, render_blocks: Vec::new() }
+        SdfScene { sdf: sdf, eye_pos: Vec3::zeros(), block_size: 2.0, render_blocks: Vec::new() }
     } 
 
     fn callback(
@@ -57,7 +57,7 @@ impl SdfScene {
     
         // Calculate the SDF distance and check if optimizations can be made for the sdf in a local scope.
         //let (d, omodel) = (self.sdf.distance(cell_position), self.sdf.clone());
-        let (d, omodel) = self.sdf.distance_and_optiomize(cell_position, cell_size);
+        let (d, omodel) = self.sdf.distance_and_optimize(cell_position, cell_size);
         if d > cell_size * sqrt_3 {
             return;
         }

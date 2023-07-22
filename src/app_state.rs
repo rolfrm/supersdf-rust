@@ -21,7 +21,9 @@ pub struct AppState {
 impl AppState {
     pub fn new(sdf_iterator: SdfScene) -> AppState {
         //let cam = FirstPerson::new(Point3::new(0.0,0.0,-5.0), Point3::new(0.0, 0.0, 0.0));
-        let mut cam = ArcBall::new_with_frustrum(1.0, 0.1, 1000.0, Point3::new(0.0, 0.0, -5.0), Point3::new(0.0, 0.0, 0.0));
+        let mut cam = ArcBall::new_with_frustrum(1.0, 0.1, 1000.0, 
+            Point3::new(0.0, 0.0, -5.0), 
+            Point3::new(0.0, 0.0, 0.0));
         
         AppState {
             sdf_iterator,

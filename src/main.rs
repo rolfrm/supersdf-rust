@@ -15,7 +15,7 @@ use kiss3d::window::{Window};
 
 fn main() {
     let sdf = build_test2().optimize_bounds();
-
+    println!("Final sdf: {:?}", sdf);
     let sdf_iterator = SdfScene::new(sdf);
 
     let mut window = Window::new("Kiss3d: wasm example");
