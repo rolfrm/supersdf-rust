@@ -1,13 +1,12 @@
 use std::{collections::HashMap, rc::Rc};
 
-use crate::{sdf, sdf_scene::{SdfScene, SdfKey}, sdf_mesh::{VertexesList, marching_cubes_sdf}};
+use crate::{sdf, sdf_scene::{SdfScene, SdfKey}, sdf_mesh::{VertexesList, marching_cubes_sdf}, vec3::Vec3};
 use image::Rgba;
 use sdf::*;
 
 use kiss3d::{nalgebra::{Vector3, Point3, Point2, Vector2, Translation3}, resource::TextureManager, camera::{ArcBall, Camera}, scene::SceneNode, window::{State, Window}, event::{MouseButton, WindowEvent, Action}};
 
-type Vec3f = Vector3<f32>;
-type Vec3 = Vec3f;
+type Vec3f = Vec3;
 type Vec2 = Vector2<f32>;
 
 pub struct AppState {
@@ -62,21 +61,13 @@ impl State for AppState {
                     let col =
                         self.sdf_iterator
                             .sdf
-                            .cast_ray(Vec3::new(at.x, at.y, at.z), unp.1, 1000.0);
+                            .cast_ray(Vec3::new(at.x, at.y, at.z).into(), unp.1.into(), 1000.0);
 
                     if let Some((_, p)) = col {
                         let newobj = Sphere::new(p, 2.0).color(Rgba([255, 0, 0, 255]));
-                        //self.sdf_iterator.sdf = self.sdf_iterator.sdf.Insert2(newobj).optimize_bounds();
                         
                         let sub = Subtract::new(self.sdf_iterator.sdf.clone(), newobj, 0.0);
                         self.sdf_iterator.sdf = sub.into();
-                        //for node in self.nodes.iter_mut() {
-                        //    let n = &mut node.1.0;    
-                        //    n.unlink();
-                        //}
-                        
-                        //self.nodes.clear();
-                        
                         
                     }
                 }
@@ -87,11 +78,10 @@ impl State for AppState {
             }
         }
 
-        let centerpos = self.camera.eye()
-        .coords.map(|x| f32::floor(x / 32.0) * 32.0);
-        self.sdf_iterator.eye_pos = self.camera.eye().to_homogeneous().xyz();
+        let centerpos : Vec3 = self.camera.eye()
+            .coords.xyz().map(|x| f32::floor(x / 32.0) * 32.0).into();
+        self.sdf_iterator.eye_pos = self.camera.eye().to_homogeneous().xyz().into();
         
-        //self.c.prepend_to_local_rotation(&self.rot);
         self.sdf_iterator.iterate_scene(centerpos, 64.0);
 
         for node in self.nodes.iter_mut() {
@@ -111,12 +101,12 @@ impl State for AppState {
                 let pos = block.0;
                 
                 let mut r = VertexesList::new();
-                let newsdf = block.3.optimized_for_block(block.0, size);
-                marching_cubes_sdf(&mut r, &newsdf, block.0, size, 0.2 * 2.0_f32.powf(block.4));
+                let newsdf = block.3.optimized_for_block(block.0.into(), size);
+                marching_cubes_sdf(&mut r, &newsdf, block.0.into(), size, 0.2 * 2.0_f32.powf(block.4));
                 
                 if r.any() {
                     if false {
-                        println!("Cube: {} ({} {} {})", size, pos.x, pos.y, pos.z);
+                        println!("Cube: {} {}", size, pos);
                 
                         let mut cube = win.add_cube(1.0, 1.0, 1.0);
                     
@@ -136,7 +126,7 @@ impl State for AppState {
                         .add_image_or_overwrite(meshtex.1, &name);
 
                     let mut node =
-                        win.add_mesh(Rc::new(meshtex.0.into()), Vec3f::new(1.0, 1.0, 1.0));
+                        win.add_mesh(Rc::new(meshtex.0.into()), Vec3::new(1.0, 1.0, 1.0).into());
                     node.set_texture(tex2);
                     println!("Builrt node!");
                     return (node, block.3.clone(), size, pos);

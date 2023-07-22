@@ -1,10 +1,9 @@
-use crate::{sdf};
+use crate::{sdf, vec3::Vec3};
 use sdf::*;
 
-use kiss3d::nalgebra::{Vector3, Vector2};
+use kiss3d::nalgebra::{Vector2};
 
-type Vec3f = Vector3<f32>;
-type Vec3 = Vec3f;
+type Vec3f = Vec3;
 type Vec2 = Vector2<f32>;
 
 #[derive(Eq, PartialEq, Hash, Debug, Clone, Copy)]
@@ -22,7 +21,7 @@ pub struct SdfScene {
     pub render_blocks: Vec<(Vec3f, f32, SdfKey, DistanceFieldEnum, f32)>,
 }
 
-const sqrt_3: f32 = 1.73205080757;
+const SQRT3: f32 = 1.73205080757;
 impl SdfScene {
 
     pub fn new(sdf : DistanceFieldEnum) -> SdfScene {
@@ -58,7 +57,7 @@ impl SdfScene {
         // Calculate the SDF distance and check if optimizations can be made for the sdf in a local scope.
         //let (d, omodel) = (self.sdf.distance(cell_position), self.sdf.clone());
         let (d, omodel) = self.sdf.distance_and_optimize(cell_position, cell_size);
-        if d > cell_size * sqrt_3 {
+        if d > cell_size * SQRT3 {
             return;
         }
         if cell_size < 0.9 {
@@ -71,7 +70,7 @@ impl SdfScene {
         }
 
         // Calculate the distance of the cell from the eye position
-        let cell_distance = (cell_position - self.eye_pos).norm();
+        let cell_distance = (cell_position - self.eye_pos).length();
         
         // Calculate the LOD level based on the distance of the cell.
         let lod_level = (cell_distance * 0.5 / self.block_size).log2().floor().max(0.0) * 0.5;

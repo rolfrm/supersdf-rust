@@ -1,15 +1,13 @@
-use crate::sdf;
-use kiss3d::nalgebra::Vector3;
+use crate::{sdf, vec3::Vec3};
 
-type Vec3 = Vector3<f32>;
 pub trait MarchingCubesReciever {
-    fn Receive(&mut self, v1: Vec3, v2: Vec3, v3: Vec3);
+    fn receive(&mut self, v1: Vec3, v2: Vec3, v3: Vec3);
 }
 
 // https://github.com/zhangxiaoxuan1/tsdfprocessor/blob/master/marching_cubes.cpp
 // http://paulbourke.net/geometry/polygonise/
 
-static edgeTable: [u32; 256] = [
+static EDGETABLE: [u32; 256] = [
     0x0, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c, 0x80c, 0x905, 0xa0f, 0xb06, 0xc0a, 0xd03,
     0xe09, 0xf00, 0x190, 0x99, 0x393, 0x29a, 0x596, 0x49f, 0x795, 0x69c, 0x99c, 0x895, 0xb9f,
     0xa96, 0xd9a, 0xc93, 0xf99, 0xe90, 0x230, 0x339, 0x33, 0x13a, 0x636, 0x73f, 0x435, 0x53c,
@@ -32,7 +30,7 @@ static edgeTable: [u32; 256] = [
     0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109, 0x0,
 ];
 
-static triTable: [[i32; 16]; 256] = [
+static TRITABLE: [[i32; 16]; 256] = [
     [
         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     ],
@@ -295,7 +293,7 @@ static triTable: [[i32; 16]; 256] = [
     ],
 ];
 
-fn VertexInterp(isolevel: f32, p1: &Vec3, p2: &Vec3, valp1: f32, valp2: f32) -> Vec3 {
+fn vertex_interp(isolevel: f32, p1: &Vec3, p2: &Vec3, valp1: f32, valp2: f32) -> Vec3 {
     if f32::abs(isolevel - valp1) < 0.00001 {
         return *p1;
     }
@@ -345,56 +343,56 @@ pub fn process_cube<T: sdf::DistanceField, T2: MarchingCubesReciever>(
     }
 
     // Cube is entirely in/out of the surface
-    if edgeTable[cubeindex] == 0 {
+    if EDGETABLE[cubeindex] == 0 {
         return 0;
     }
     let mut vertlist: [Vec3; 12] = [Vec3::zeros(); 12];
 
     // Find the points where the surface intersects the cube
-    if (edgeTable[cubeindex] & 1) != 0 {
-        vertlist[0] = VertexInterp(isolevel, &points[0], &points[1], ds[0], ds[1]);
+    if (EDGETABLE[cubeindex] & 1) != 0 {
+        vertlist[0] = vertex_interp(isolevel, &points[0], &points[1], ds[0], ds[1]);
     }
-    if (edgeTable[cubeindex] & 2) != 0 {
-        vertlist[1] = VertexInterp(isolevel, &points[1], &points[2], ds[1], ds[2]);
+    if (EDGETABLE[cubeindex] & 2) != 0 {
+        vertlist[1] = vertex_interp(isolevel, &points[1], &points[2], ds[1], ds[2]);
     }
-    if (edgeTable[cubeindex] & 4) != 0 {
-        vertlist[2] = VertexInterp(isolevel, &points[2], &points[3], ds[2], ds[3]);
+    if (EDGETABLE[cubeindex] & 4) != 0 {
+        vertlist[2] = vertex_interp(isolevel, &points[2], &points[3], ds[2], ds[3]);
     }
-    if (edgeTable[cubeindex] & 8) != 0 {
-        vertlist[3] = VertexInterp(isolevel, &points[3], &points[0], ds[3], ds[0]);
+    if (EDGETABLE[cubeindex] & 8) != 0 {
+        vertlist[3] = vertex_interp(isolevel, &points[3], &points[0], ds[3], ds[0]);
     }
-    if (edgeTable[cubeindex] & 16) != 0 {
-        vertlist[4] = VertexInterp(isolevel, &points[4], &points[5], ds[4], ds[5]);
+    if (EDGETABLE[cubeindex] & 16) != 0 {
+        vertlist[4] = vertex_interp(isolevel, &points[4], &points[5], ds[4], ds[5]);
     }
-    if (edgeTable[cubeindex] & 32) != 0 {
-        vertlist[5] = VertexInterp(isolevel, &points[5], &points[6], ds[5], ds[6]);
+    if (EDGETABLE[cubeindex] & 32) != 0 {
+        vertlist[5] = vertex_interp(isolevel, &points[5], &points[6], ds[5], ds[6]);
     }
-    if (edgeTable[cubeindex] & 64) != 0 {
-        vertlist[6] = VertexInterp(isolevel, &points[6], &points[7], ds[6], ds[7]);
+    if (EDGETABLE[cubeindex] & 64) != 0 {
+        vertlist[6] = vertex_interp(isolevel, &points[6], &points[7], ds[6], ds[7]);
     }
-    if (edgeTable[cubeindex] & 128) != 0 {
-        vertlist[7] = VertexInterp(isolevel, &points[7], &points[4], ds[7], ds[4]);
+    if (EDGETABLE[cubeindex] & 128) != 0 {
+        vertlist[7] = vertex_interp(isolevel, &points[7], &points[4], ds[7], ds[4]);
     }
-    if (edgeTable[cubeindex] & 256) != 0 {
-        vertlist[8] = VertexInterp(isolevel, &points[0], &points[4], ds[0], ds[4]);
+    if (EDGETABLE[cubeindex] & 256) != 0 {
+        vertlist[8] = vertex_interp(isolevel, &points[0], &points[4], ds[0], ds[4]);
     }
-    if (edgeTable[cubeindex] & 512) != 0 {
-        vertlist[9] = VertexInterp(isolevel, &points[1], &points[5], ds[1], ds[5]);
+    if (EDGETABLE[cubeindex] & 512) != 0 {
+        vertlist[9] = vertex_interp(isolevel, &points[1], &points[5], ds[1], ds[5]);
     }
-    if (edgeTable[cubeindex] & 1024) != 0 {
-        vertlist[10] = VertexInterp(isolevel, &points[2], &points[6], ds[2], ds[6]);
+    if (EDGETABLE[cubeindex] & 1024) != 0 {
+        vertlist[10] = vertex_interp(isolevel, &points[2], &points[6], ds[2], ds[6]);
     }
-    if (edgeTable[cubeindex] & 2048) != 0 {
-        vertlist[11] = VertexInterp(isolevel, &points[3], &points[7], ds[3], ds[7]);
+    if (EDGETABLE[cubeindex] & 2048) != 0 {
+        vertlist[11] = vertex_interp(isolevel, &points[3], &points[7], ds[3], ds[7]);
     }
 
     let mut i = 0;
-    while triTable[cubeindex][i] != -1 {
-        let p1 = vertlist[usize::try_from(triTable[usize::from(cubeindex)][i]).unwrap()];
-        let p2 = vertlist[usize::try_from(triTable[cubeindex][i + 1]).unwrap()];
-        let p3 = vertlist[usize::try_from(triTable[cubeindex][i + 2]).unwrap()];
+    while TRITABLE[cubeindex][i] != -1 {
+        let p1 = vertlist[usize::try_from(TRITABLE[usize::from(cubeindex)][i]).unwrap()];
+        let p2 = vertlist[usize::try_from(TRITABLE[cubeindex][i + 1]).unwrap()];
+        let p3 = vertlist[usize::try_from(TRITABLE[cubeindex][i + 2]).unwrap()];
 
-        f.Receive(p1, p2, p3);
+        f.receive(p1, p2, p3);
         i += 3;
     }
     return 0;

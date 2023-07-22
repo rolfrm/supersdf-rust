@@ -2,13 +2,13 @@ use image::{Pixel, Rgba};
 use kiss3d::nalgebra as na;
 use kiss3d::nalgebra::{Vector3};
 use noise::{NoiseFn, Perlin};
-use std::f32::consts::PI;
 //, Simplex, SuperSimplex};
 use std::rc::Rc;
-type Vec3 = Vector3<f32>;
+
+use crate::vec3::Vec3;
 type Vec3f = Vec3;
 
-const sqrt_3: f32 = 1.73205080757;
+const SQRT3: f32 = 1.73205080757;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum DistanceFieldEnum {
@@ -53,7 +53,7 @@ impl Sphere {
     }
 
     pub fn two_sphere_bounds(a: &Sphere, b: &Sphere) -> Sphere {
-        let n2 = (a.center - b.center).norm();
+        let n2 = (a.center - b.center).length();
         if(n2 <= 0.000001){
             return match a.radius < b.radius{
                 true => b,
@@ -65,13 +65,9 @@ impl Sphere {
         let rightext = b.center - r2ld * b.radius;
 
         let center = (leftext + rightext) * 0.5;
-        let radius = (leftext - rightext).norm() * 0.5;
+        let radius = (leftext - rightext).length() * 0.5;
 
         return Sphere::new(center, radius);
-    }
-
-    fn volume(&self) -> f32 { 
-        (4.0 / 3.0) * PI * self.radius.powf(3.0)
     }
 }
 
@@ -104,7 +100,7 @@ impl Aabb {
     pub fn distance(&self, p: Vec3f) -> f32 {
         let p2 = p - self.center;
         let q = p2.abs() - self.radius;
-        return vec3_max(q, Vec3::zeros()).norm()
+        return vec3_max(q, Vec3::zeros()).length()
             + f32::min(f32::max(q.x, f32::max(q.y, q.z)), 0.0);
     }
 
@@ -151,11 +147,10 @@ impl Gradient {
 
     pub fn color(&self, p: Vec3) -> Rgba<u8> {
         let pt2 = p - self.p1;
-        let l2 = (self.p1 - self.p2).norm_squared();
-        let f = (self.p2 - self.p1).dot(&pt2) / l2;
+        let l2 = (self.p1 - self.p2).length_squared();
+        let f = (self.p2 - self.p1).dot(pt2) / l2;
         let mut colorbase = self.inner.color(p);
-        let mut color = rgba_interp(self.c1, self.c2, f);
-        colorbase.blend(&color);
+        let color = rgba_interp(self.c1, self.c2, f);
         colorbase.blend(&color);
         return colorbase;
     }
@@ -208,7 +203,7 @@ impl Noise {
         let n3 = self
             .noise
             .get([pos3.x as f64, pos3.y as f64, pos3.z as f64]);
-        let mut color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
+        let color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
         if color[3] < 255 {
             let mut colorbase = self.inner.color(pos);
             colorbase.blend(&color);
@@ -268,7 +263,7 @@ impl Into<DistanceFieldEnum> for Add {
 
 impl DistanceField for Sphere {
     fn distance(&self, pos: Vec3f) -> f32 {
-        (pos - self.center).norm() - self.radius
+        (pos - self.center).length() - self.radius
     }
 }
 impl DistanceField for DistanceFieldEnum {
@@ -339,7 +334,7 @@ impl DistanceFieldEnum {
             println!("{:?} {:?}", pos, d);
 
             total_distance += d;
-            mpos = mpos + d * dir;
+            mpos = mpos + dir * d;
             if total_distance > max_dist {
                 return None;
             }
@@ -354,10 +349,10 @@ impl DistanceFieldEnum {
         let right_opt = add.right.optimized_for_block(block_center, size);
         let left_d = left_opt.distance(block_center);
         let right_d = right_opt.distance(block_center);
-        if left_d > right_d + size * sqrt_3 {
+        if left_d > right_d + size * SQRT3 {
             return right_opt;
         }
-        if right_d > left_d + size * sqrt_3 {
+        if right_d > left_d + size * SQRT3 {
             return left_opt;
         }
         if left_opt.eq(&add.left) && right_opt.eq(&add.right) {
@@ -376,7 +371,7 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Subtract(sub) => {
                 let subtract_d = sub.subtract.distance(block_center);
                 let left2 = sub.left.optimized_for_block(block_center, size);
-                if subtract_d > size * sqrt_3 * 1.5 {
+                if subtract_d > size * SQRT3 * 1.5 {
                     if left2.eq(&sub.left) {
                         return sub.left.as_ref().clone();
                     }
@@ -391,7 +386,7 @@ impl DistanceFieldEnum {
 
             DistanceFieldEnum::BoundsAdd(add, bounds) => {
                 let bounds_d = bounds.distance(block_center);
-                if bounds_d < size * sqrt_3 {
+                if bounds_d < size * SQRT3 {
                     let r = DistanceFieldEnum::optimize_add(add, block_center, size);
                     match r {
                         DistanceFieldEnum::Add(add) =>
@@ -412,14 +407,14 @@ impl DistanceFieldEnum {
     }
 
     pub fn distance_and_optimize(&self, pos: Vec3f, size: f32) -> (f32, DistanceFieldEnum) {
-        let pos2 = na::Matrix::map(&pos, |x| f32::floor(x / size) * size);
+        let pos2 : Vec3 = pos.map(|x| f32::floor(x / size) * size);
         let sdf2 =
             self.optimized_for_block(pos2 + Vec3::new(size * 0.5, size * 0.5, size * 0.5), size);
         
         return (self.distance(pos), sdf2);
     }
 
-    pub fn Insert(&self, sdf: DistanceFieldEnum) -> DistanceFieldEnum {
+    pub fn insert(&self, sdf: DistanceFieldEnum) -> DistanceFieldEnum {
         match self {
             DistanceFieldEnum::Empty => sdf,
             _ => Add::new(self.clone(), sdf).into(),
@@ -432,7 +427,7 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Add(add) => {
                 let l0 = add.left.calculate_sphere_bounds().center;
                 let l1 = add.right.calculate_sphere_bounds().center;
-                let l3 = (l0 - l1).norm();
+                let l3 = (l0 - l1).length();
 
                 let d1 = add.left.distance(esdfs.center);
                 let d2 = add.right.distance(esdfs.center);
@@ -442,9 +437,9 @@ impl DistanceFieldEnum {
                 }else if(d2 < d1 && d2 < l3){
                     return Add{ right : Rc::new(add.right.insert_2(esdf)), left: add.left.clone()}.into();
                 }
-                return self.Insert(esdf.clone());
+                return self.insert(esdf.clone());
             },
-            _ => self.Insert(esdf)
+            _ => self.insert(esdf)
         }
 
     }
@@ -452,7 +447,7 @@ impl DistanceFieldEnum {
     pub fn calculate_sphere_bounds(&self) -> Sphere {
         match self {
             DistanceFieldEnum::Sphere(sphere) => sphere.clone(),
-            DistanceFieldEnum::Aabb(aabb) => Sphere::new(aabb.center, aabb.radius.norm()),
+            DistanceFieldEnum::Aabb(aabb) => Sphere::new(aabb.center, aabb.radius.length()),
             DistanceFieldEnum::BoundsAdd(_, sphere) => sphere.clone(),
             DistanceFieldEnum::Empty => Sphere::new(Vec3f::zeros(), f32::INFINITY),
             DistanceFieldEnum::Gradient(gradient) => gradient.inner.calculate_sphere_bounds(),
@@ -525,8 +520,8 @@ impl DistanceFieldEnum {
         let dy2 = self.distance(pty);
         let dz2 = self.distance(ptz);
         let dv = Vec3::new(dx1 - dx2, dy1 - dy2, dz1 - dz2);
-        let l = dv.norm();
-        if f32::abs(l) < 0.00001 {
+        let l = dv.length();
+        if l < 0.00001 {
             return Vec3::zeros();
         }
         let x = dv / l;

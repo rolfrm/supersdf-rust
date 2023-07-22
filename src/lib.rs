@@ -4,6 +4,7 @@ mod sdf_mesh;
 mod sdf_scene;
 mod triangle_raster;
 mod app_state;
+mod vec3;
 
 use sdf::*;
 use sdf_scene::*;

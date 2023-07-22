@@ -1,10 +1,8 @@
-use crate::{mc, sdf, triangle_raster};
+use crate::{mc, sdf, triangle_raster, vec3::{Vec3, IntoVector3Array}};
 
 use std::collections::HashMap;
 
-use kiss3d::{
-    resource::{Mesh}, nalgebra::{DimNameMin, RealField},
-};
+use kiss3d::resource::Mesh;
 use mc::*;
 use sdf::*;
 use triangle_raster::*;
@@ -12,8 +10,7 @@ use triangle_raster::*;
 use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
 use kiss3d::nalgebra::{Const, OPoint, Point2, Point3, Vector2, Vector3};
 
-type Vec3f = Vector3<f32>;
-type Vec3 = Vec3f;
+type Vec3f = Vec3;
 type Vec2 = Vector2<f32>;
 
 pub struct VertexesList {
@@ -35,7 +32,7 @@ impl VertexesList {
 }
 
 impl MarchingCubesReciever for VertexesList {
-    fn Receive(&mut self, v1: Vec3f, v2: Vec3f, v3: Vec3f) {
+    fn receive(&mut self, v1: Vec3, v2: Vec3, v3: Vec3) {
         self.verts.push(v3);
         self.verts.push(v2);
         self.verts.push(v1);
@@ -106,12 +103,6 @@ impl VecKey for Vec3 {
         )
     }
 }
-fn vec3f_min(v1 : Vec3f, v2 : Vec3f) -> Vec3f {
-    Vec3f::new(f32::min(v1.x, v2.x), f32::min(v1.y, v2.y), f32::min(v1.z, v2.z))
-}
-fn vec3f_max(v1 : Vec3f, v2 : Vec3f) -> Vec3f {
-    Vec3f::new(f32::max(v1.x, v2.x), f32::max(v1.y, v2.y), f32::max(v1.z, v2.z))
-}
 
 impl VertexesList {
     pub fn to_mesh(&self, sdf: &DistanceFieldEnum) -> (Mesh, DynamicImage) {
@@ -144,8 +135,8 @@ impl VertexesList {
         let mut min = Vec3f::new(-100000.0, -100000.0, -100000.0);
 
         for v in &self.verts {
-            min = vec3f_min(min, *v);
-            max = vec3f_max(max, *v);
+            min = min.min(*v);
+            max = max.max(*v);
             let key = v.key();
 
             if dict.contains_key(&key) {
@@ -153,7 +144,7 @@ impl VertexesList {
             }
         }
         let mid = (max + min) * 0.5;
-        let size = (max - min).norm() * 0.5;
+        let size = (max - min).length() * 0.5;
         let sdf = sdf.optimized_for_block(mid, size);
 
         for v in &self.verts {
@@ -187,9 +178,9 @@ impl VertexesList {
                 faceit = 0;
                 faces.push(face);
 
-                let va = coords[coords.len() - 3].to_homogeneous().xyz();
-                let vb = coords[coords.len() - 2].to_homogeneous().xyz();
-                let vc = coords[coords.len() - 1].to_homogeneous().xyz();
+                let va : Vec3 = coords[coords.len() - 3].to_homogeneous().xyz().into();
+                let vb : Vec3 = coords[coords.len() - 2].to_homogeneous().xyz().into();
+                let vc : Vec3 = coords[coords.len() - 1].to_homogeneous().xyz().into();
 
                 // now trace the colors into the texture for this triangle.
                 let uva: Vec2 = uvs[uvs.len() - 3].to_homogeneous().xy();
@@ -205,10 +196,10 @@ impl VertexesList {
                     pb + Vec2::new(2.0, -2.0),
                     pc + Vec2::new(-2.0, 2.0),
                 );
-                let min2 = vec3f_min(va, vec3f_min(vb, vc));
-                let max2 = vec3f_max(va, vec3f_max(vb, vc));
+                let min2 = va.min(vb).min(vc);
+                let max2 = va.max(vb).max(vc);
                 let mid2 = (max2 + min2) * 0.5;
-                let size2 = (max2 - min2).norm() * 0.5;
+                let size2 = (max2 - min2).length() * 0.5;
                 let sdf2 = sdf.optimized_for_block(mid2, size2);
                 
                 iter_triangle(&trig, |pixel| {
@@ -231,7 +222,7 @@ impl VertexesList {
             Mesh::new(
                 coords,
                 faces,
-                Option::Some(normals),
+                Option::Some(IntoVector3Array(normals)),
                 Option::Some(uvs),
                 false,
             ),
