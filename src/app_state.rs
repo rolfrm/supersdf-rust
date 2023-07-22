@@ -4,7 +4,7 @@ use crate::{sdf, sdf_scene::{SdfScene, SdfKey}, sdf_mesh::{VertexesList, marchin
 use image::Rgba;
 use sdf::*;
 
-use kiss3d::{nalgebra::{Vector3, Point3, Point2, Vector2}, resource::TextureManager, camera::{ArcBall, Camera}, scene::SceneNode, window::{State, Window}, event::{MouseButton, WindowEvent, Action}};
+use kiss3d::{nalgebra::{Vector3, Point3, Point2, Vector2, Translation3}, resource::TextureManager, camera::{ArcBall, Camera}, scene::SceneNode, window::{State, Window}, event::{MouseButton, WindowEvent, Action}};
 
 type Vec3f = Vector3<f32>;
 type Vec3 = Vec3f;
@@ -109,23 +109,21 @@ impl State for AppState {
                 let pos = block.0;
                 
                 let mut r = VertexesList::new();
-                //println!("Optimize: {:?}", block.3);
                 let newsdf = block.3.optimized_for_block(block.0, size);
-                //println!("Optimized: {:?}", newsdf);
-                
                 marching_cubes_sdf(&mut r, &newsdf, block.0, size, 0.2 * 2.0_f32.powf(block.4));
                 
                 if r.any() {
-                    println!("Cube: {} ({} {} {})", size, pos.x, pos.y, pos.z);
+                    if false {
+                        println!("Cube: {} ({} {} {})", size, pos.x, pos.y, pos.z);
                 
-                    //let mut cube = win.add_cube(1.0, 1.0, 1.0);
-                    //
-                    //cube.set_local_scale(size * 1.99, size* 1.99, size* 1.99);
-                    //
-                    //cube.set_local_translation(Translation3::new(pos.x as f32, pos.y as f32, pos.z as f32));
-                    //
-                    //return (cube, block.3.clone(), size, pos);
+                        let mut cube = win.add_cube(1.0, 1.0, 1.0);
                     
+                        cube.set_local_scale(size * 1.99, size* 1.99, size* 1.99);
+                    
+                        cube.set_local_translation(Translation3::new(pos.x as f32, pos.y as f32, pos.z as f32));
+                    
+                        return (cube, block.3.clone(), size, pos);
+                    }
     
                     let meshtex = r.to_mesh(&newsdf);
 

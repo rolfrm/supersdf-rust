@@ -289,7 +289,7 @@ impl DistanceField for Add {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Subtract {
      left : Rc<DistanceFieldEnum>,
-     right: Rc<DistanceFieldEnum>,
+     subtract: Rc<DistanceFieldEnum>,
      k : f32
 }
 
@@ -299,7 +299,7 @@ impl DistanceField for Subtract {
     fn distance(&self, pos : Vec3f) -> f32 {
     let k = self.k;
     let d1 = self.left.distance(pos);
-    let d2 = self.right.distance(pos);
+    let d2 = self.subtract.distance(pos);
     let h = f32::clamp(0.5 - 0.5 * (d2 + d1) / k, 0.0, 1.0);
     
     let r = f32mixf(d1, -d2, h) + k * h * (1.0 - h);
@@ -309,7 +309,7 @@ impl DistanceField for Subtract {
 
 impl Subtract {
     pub fn new<T : Into<DistanceFieldEnum>, T2 : Into<DistanceFieldEnum>>(left : T, right : T2, k : f32) -> Subtract {
-        Subtract { left: Rc::new(left.into()), right: Rc::new(right.into()), k: k }
+        Subtract { left: Rc::new(left.into()), subtract: Rc::new(right.into()), k: k }
     }
 }
 impl Into<DistanceFieldEnum> for Subtract {
@@ -362,15 +362,18 @@ impl DistanceFieldEnum {
                 DistanceFieldEnum::optimize_add(add, block_center,size)
             },
             DistanceFieldEnum::Subtract(sub) => {
-                let right_d = sub.right.distance(block_center);
+                let subtract_d = sub.subtract.distance(block_center);
                 let left2 = sub.left.optimized_for_block(block_center, size);
-                if right_d > size * sqrt_3 {
+                if subtract_d > size * sqrt_3 * 1.5 {
+                    if left2.eq(&sub.left) {
+                        return sub.left.as_ref().clone();
+                    }
                     return left2;
                 }
                 if left2.eq(&sub.left) {
                     return DistanceFieldEnum::Subtract(sub.clone());
                 }
-                DistanceFieldEnum::Subtract( Subtract {left : Rc::new(left2), right: sub.right.clone(), k: sub.k}).into()
+                DistanceFieldEnum::Subtract( Subtract {left : Rc::new(left2), subtract: sub.subtract.clone(), k: sub.k}).into()
                 
             }
 
@@ -535,6 +538,24 @@ pub fn build_test() -> DistanceFieldEnum {
 
     
 }
+
+
+pub fn build_test2() -> DistanceFieldEnum {
+    let mut sdf  = DistanceFieldEnum::Empty;
+    for x in 0..10 {
+        for y in 0..10 {
+            for z in 0..10 {
+                let sphere = Sphere::new(Vec3f::new(x as f32* 5.0, y as f32* 5.0, z as f32 * 5.0), 2.0).color(Rgba([255, 0, 0, 255]));
+                sdf = sdf.Insert2(sphere);
+            }
+        }
+    }
+    
+    return sdf;
+
+    
+}
+
 
 #[cfg(test)]
 mod tests {
