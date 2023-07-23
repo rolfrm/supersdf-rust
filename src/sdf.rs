@@ -2,6 +2,9 @@ use image::{Pixel, Rgba};
 use kiss3d::nalgebra as na;
 use kiss3d::nalgebra::{Vector3};
 use noise::{NoiseFn, Perlin};
+use rand::{thread_rng, Rng};
+use rand::seq::SliceRandom;
+use std::fmt;
 //, Simplex, SuperSimplex};
 use std::rc::Rc;
 
@@ -54,7 +57,7 @@ impl Sphere {
 
     pub fn two_sphere_bounds(a: &Sphere, b: &Sphere) -> Sphere {
         let n2 = (a.center - b.center).length();
-        if(n2 <= 0.000001){
+        if n2 <= 0.000001 {
             return match a.radius < b.radius{
                 true => b,
                 false => a
@@ -278,7 +281,7 @@ impl DistanceField for DistanceFieldEnum {
             DistanceFieldEnum::Noise(noise) => noise.inner.distance(pos),
             DistanceFieldEnum::BoundsAdd(add, bounds) => {
                 let d1 = bounds.distance(pos);
-                if d1 > bounds.radius * 0.5 {
+                if d1 > bounds.radius * SQRT3{
                     return d1;
                 }
                 return add.distance(pos);
@@ -328,10 +331,8 @@ impl DistanceFieldEnum {
     pub fn cast_ray(&self, pos: Vec3f, dir: Vec3f, max_dist: f32) -> Option<(f32, Vec3f)> {
         let mut total_distance = 0.0;
         let mut mpos = pos;
-        println!("{:?} {:?}", pos, dir);
         loop {
             let d = self.distance(mpos);
-            println!("{:?} {:?}", pos, d);
 
             total_distance += d;
             mpos = mpos + dir * d;
@@ -345,6 +346,7 @@ impl DistanceFieldEnum {
     }
 
     pub fn optimize_add(add: &Add, block_center: Vec3f, size: f32) -> DistanceFieldEnum {
+        
         let left_opt = add.left.optimized_for_block(block_center, size);
         let right_opt = add.right.optimized_for_block(block_center, size);
         let left_d = left_opt.distance(block_center);
@@ -352,12 +354,11 @@ impl DistanceFieldEnum {
         if left_d > right_d + size * SQRT3 {
             return right_opt;
         }
-        if right_d > left_d + size * SQRT3 {
+        if right_d > left_d + size * SQRT3{
             return left_opt;
         }
         if left_opt.eq(&add.left) && right_opt.eq(&add.right) {
             let add2 = add.clone();
-            //println!("Reuse! {}", Rc::strong_count(&add2.left));
             return DistanceFieldEnum::Add(add2);
         }
         return Add::new(left_opt, right_opt).into();
@@ -371,7 +372,7 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Subtract(sub) => {
                 let subtract_d = sub.subtract.distance(block_center);
                 let left2 = sub.left.optimized_for_block(block_center, size);
-                if subtract_d > size * SQRT3 * 1.5 {
+                if subtract_d > size * SQRT3 * 2.0{
                     if left2.eq(&sub.left) {
                         return sub.left.as_ref().clone();
                     }
@@ -568,10 +569,20 @@ pub fn build_test() -> DistanceFieldEnum {
 
 pub fn build_test2() -> DistanceFieldEnum {
     let mut sdf  = DistanceFieldEnum::Empty;
-    for x in 0..3 {
-        for y in 0..3 {
-            for z in (0..3) {
-                let sphere = Sphere::new(Vec3f::new(x as f32* 5.0, y as f32* 5.0, z as f32 * 5.0), 2.0).color(Rgba([255, 0, 0, 255]));
+    let mut rng: rand::rngs::ThreadRng = thread_rng();
+    //let v = (0..3).shuffle()
+    let mut v = [0,1,2];
+    v.shuffle(&mut rng);
+    for x in v.iter(){
+        let mut v = [0,1,2];
+        v.shuffle(&mut rng);
+    
+        for y in v.iter() {
+            let mut v = [0,1,2];
+            v.shuffle(&mut rng);
+    
+            for z in v.iter() {
+                let sphere = Sphere::new(Vec3f::new(*x as f32* 5.0, *y as f32* 5.0, *z as f32 * 5.0), 2.0).color(Rgba([255, 0, 0, 255]));
                 sdf = sdf.insert_2(sphere);
             }
         }
@@ -583,16 +594,58 @@ pub fn build_test2() -> DistanceFieldEnum {
 pub fn build_test3() -> DistanceFieldEnum {
     let mut sdf  = DistanceFieldEnum::Empty;
     sdf = sdf.insert_2(Sphere::new(Vec3f::new(0.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
-    sdf = sdf.insert_2(Sphere::new(Vec3f::new(5.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
-    sdf = sdf.insert_2(Sphere::new(Vec3f::new(1.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
-    sdf = sdf.insert_2(Sphere::new(Vec3f::new(6.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
+    sdf = sdf.insert_2(Sphere::new(Vec3f::new(25.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
+    //sdf = sdf.insert_2(Sphere::new(Vec3f::new(1.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
+    //sdf = sdf.insert_2(Sphere::new(Vec3f::new(6.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
+    
+    return sdf;
+}
+
+pub fn build_big(n : i32) -> DistanceFieldEnum {
+    let mut sdf  = DistanceFieldEnum::Empty;
+    let mut rng: rand::rngs::ThreadRng = thread_rng();
+    
+    for x in 0..n{
+        for y in 0..n {
+            for z in 0..n {
+                let sphere = Sphere::new(Vec3f::new(x as f32* 3.0, y as f32* 3.0, z as f32 * 3.0), 2.0).color(Rgba([255, 0, 0, 255]));
+                sdf = sdf.insert_2(sphere);
+            }
+        }
+    }
     
     return sdf;
 }
 
 
+fn fmt_rgba(rgba: Rgba<u8>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{} {} {} {}]", rgba[0], rgba[1], rgba[2], rgba[3])
+}
+
+impl fmt::Display for DistanceFieldEnum{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DistanceFieldEnum::Sphere(sphere) =>{ 
+                write!(f, "(Sphere {} {})", sphere.center, sphere.radius)
+            
+            },
+            DistanceFieldEnum::Aabb(aabb) => 
+            {
+                write!(f, "(AABB {} {})", aabb.center, aabb.radius)},
+            DistanceFieldEnum::Add(add) => write!(f, "({}\n {}\n)", add.left, add.right),
+            DistanceFieldEnum::BoundsAdd(a, b) => {write!(f, "(bounds-add {} {} {} {})", a.left, a.right, b.center, b.radius)},
+            DistanceFieldEnum::Gradient(_) => todo!(),
+            DistanceFieldEnum::Noise(_) => todo!(),
+            DistanceFieldEnum::Subtract(_) => todo!(),
+            DistanceFieldEnum::Empty => todo!(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use rand::{rngs::{ThreadRng, StdRng}, SeedableRng};
+
     use super::*;
 
 
@@ -617,5 +670,90 @@ mod tests {
 
     }
 
+    #[test]
+    fn test_sdf_format(){
+        let sdf = build_test2();
+        println!("{}", sdf);
+    }
+
+    #[test]
+    fn test_build_big_optimize(){
+        let sdf = build_big(10);
+        let sdf2 = sdf.optimized_for_block(Vec3::new(0.0, 0.0, 0.0), 5.0);
+        println!("sdf2: {}", sdf2);
+    }
+    #[test]
+    fn test_optimized_bounds(){
+        let sdf = DistanceFieldEnum::Empty
+            .insert_2(Sphere::new(Vec3::new(0.0,0.0,0.0), 1.0))
+            .insert_2(Sphere::new(Vec3::new(2.0,0.0,0.0), 1.0));
+        
+        let sdfopt = sdf.optimize_bounds();
+        println!("{}", sdf);
+        println!("{}", sdfopt);
+        
+        let mut rng = StdRng::seed_from_u64(2);
+
+        let d1 = Vec3::new(1.0, 5.5, 0.0);
+        let a1 = sdf.distance(d1);
+        let c1 = sdfopt.distance(d1);
+        let error = (a1 - c1) / a1;
+        println!("{} {} {}", a1, c1 ,error);
+        return;
+        
+        for _ in 0..10000000 {
+             
+            let d = Vec3::new(rng.gen_range(-10.0..10.0), rng.gen_range(-10.0..10.0),rng.gen_range(-10.0..10.0));
+            
+            
+            let a = sdf.distance(d);
+            let c = sdfopt.distance(d);
+            
+            println!("bounds??: {} {} {} {}", d, a, c, (a - c) / a);
+            assert!(c <= a);
+
+            let error = (a - c) / a;
+            if a < 0.0 {
+                assert!((a - c).abs() < 0.000001);
+            }else{
+                assert!(error < 0.4);
+            }   
+        }
+    }
+    #[test]
+    fn test_build_big_optimize2(){
+        let sdf = build_big(4);
+        let sdfopt = sdf.optimize_bounds();
+        
+        
+        let bounds =  sdf.calculate_sphere_bounds();
+        let mut rng = thread_rng();
+        for _ in 0..10000000 {
+            let size = rng.gen_range(1.0..10.0);
+            let halfsize = size * 0.5;
+            let d = Vec3::new(rng.gen_range(0.0..12.0), rng.gen_range(0.0..12.0),rng.gen_range(0.0..12.0));
+            let d2: Vec3 = Vec3::new(rng.gen_range(-halfsize..halfsize)
+                , rng.gen_range(-halfsize..halfsize)
+                , rng.gen_range(-halfsize..halfsize));
+            let block = sdf.optimized_for_block(d + d2, size);
+            
+            let a = sdf.distance(d);
+            let b = block.distance(d);
+            let c = sdfopt.distance(d);
+            
+            println!("block: {} {} {} {} {}", d, a, b, size, (a - c).abs());
+            assert_eq!(a, b);
+            if a < 0.0 {
+                assert!((a - c).abs() < 0.000001);
+            }else{
+                if (a - c).abs() > a * 0.01{
+                    println!("{} {}", a, c);
+                }
+                assert!((a - c).abs() < a * 0.01);
+
+            }
+            
+        }
+    }
 
 }

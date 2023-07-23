@@ -66,7 +66,7 @@ impl State for AppState {
                     if let Some((_, p)) = col {
                         let newobj = Sphere::new(p, 2.0).color(Rgba([255, 0, 0, 255]));
                         
-                        let sub = Subtract::new(self.sdf_iterator.sdf.clone(), newobj, 0.0);
+                        let sub = Subtract::new(self.sdf_iterator.sdf.clone(), newobj, 0.5);
                         self.sdf_iterator.sdf = sub.into();
                         
                     }
@@ -79,10 +79,10 @@ impl State for AppState {
         }
 
         let centerpos : Vec3 = self.camera.eye()
-            .coords.xyz().map(|x| f32::floor(x / 32.0) * 32.0).into();
+            .coords.xyz().map(|x| f32::floor(x / 16.0) * 16.0).into();
         self.sdf_iterator.eye_pos = self.camera.eye().to_homogeneous().xyz().into();
         
-        self.sdf_iterator.iterate_scene(centerpos, 64.0);
+        self.sdf_iterator.iterate_scene(centerpos, 128.0);
 
         for node in self.nodes.iter_mut() {
             let n = &mut node.1.0;    
@@ -92,8 +92,6 @@ impl State for AppState {
         for block in &self.sdf_iterator.render_blocks {
             loop {
             let nd = self.nodes.entry(block.2).or_insert_with(|| {
-
-
 
                 let pos = block.2;
                 
@@ -110,7 +108,7 @@ impl State for AppState {
                 
                         let mut cube = win.add_cube(1.0, 1.0, 1.0);
                     
-                        cube.set_local_scale(size * 1.99, size* 1.99, size* 1.99);
+                        cube.set_local_scale(size * 1.99, size * 1.99, size* 1.99);
                     
                         cube.set_local_translation(Translation3::new(pos.x as f32, pos.y as f32, pos.z as f32));
                     

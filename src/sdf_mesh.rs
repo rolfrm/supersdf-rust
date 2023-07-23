@@ -121,7 +121,7 @@ impl VertexesList {
         let fw = 1.0 / (columns as f64);
         let fh = 1.0 / (rows as f64);
 
-        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(512, 512);
+        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(128, 128);
         let pxmargin = 3;
         let uvmargin = (1.0 + rows as f64) * (pxmargin as f64) / (buf.width() as f64);
         let bufsize: kiss3d::nalgebra::Matrix<

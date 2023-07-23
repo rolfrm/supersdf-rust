@@ -25,7 +25,7 @@ const SQRT3: f32 = 1.73205080757;
 impl SdfScene {
 
     pub fn new(sdf : DistanceFieldEnum) -> SdfScene {
-        SdfScene { sdf: sdf, eye_pos: Vec3::zeros(), block_size: 2.0, render_blocks: Vec::new() }
+        SdfScene { sdf: sdf, eye_pos: Vec3::zeros(), block_size: 1.0, render_blocks: Vec::new() }
     } 
 
     fn callback(
@@ -73,7 +73,7 @@ impl SdfScene {
         let cell_distance = (cell_position - self.eye_pos).length();
         
         // Calculate the LOD level based on the distance of the cell.
-        let lod_level = (cell_distance * 0.5 / self.block_size).log2().floor().max(0.0) * 0.5;
+        let lod_level = (cell_distance * 0.5 / self.block_size).log2().floor().max(0.0) * 0.4;
         
         // Calculate the cell size. Farther away -> bigger blocks with lower resolution.
         let lod_cell_size = self.block_size * 2.0_f32.powf(lod_level);
