@@ -35,7 +35,7 @@ impl Vec3 {
 
     pub fn length_squared(&self) -> f32 { self.dot(*self) }
 
-    pub fn map<F: Fn(f32) -> f32>(self, f: F) -> Self { Vec3::new(f(self.x), f(self.y), f(self.z)) }
+    pub fn map<F: FnMut(f32) -> f32>(self, mut f: F) -> Self { Vec3::new(f(self.x), f(self.y), f(self.z)) }
     
 
     pub fn map2<F: Fn(f32,f32) -> f32>(self, other: Vec3, f: F) -> Self {

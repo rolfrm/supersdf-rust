@@ -72,6 +72,10 @@ impl Sphere {
 
         return Sphere::new(center, radius);
     }
+
+    pub fn overlaps(&self, other: &Sphere) -> bool {
+        (self.center - other.center).length() - self.radius - other.radius < 0.0
+    }
 }
 
 impl Into<DistanceFieldEnum> for Sphere {
@@ -318,8 +322,8 @@ impl DistanceField for Subtract {
 }
 
 impl Subtract {
-    pub fn new<T : Into<DistanceFieldEnum>, T2 : Into<DistanceFieldEnum>>(left : T, right : T2, k : f32) -> Subtract {
-        Subtract { left: Rc::new(left.into()), subtract: Rc::new(right.into()), k: k }
+    pub fn new<T : Into<DistanceFieldEnum>, T2 : Into<DistanceFieldEnum>>(left : T, subtract : T2, k : f32) -> Subtract {
+        Subtract { left: Rc::new(left.into()), subtract: Rc::new(subtract.into()), k: k }
     }
 }
 impl Into<DistanceFieldEnum> for Subtract {
@@ -370,7 +374,9 @@ impl DistanceFieldEnum {
                 DistanceFieldEnum::optimize_add(add, block_center,size)
             },
             DistanceFieldEnum::Subtract(sub) => {
-                let subtract_d = sub.subtract.distance(block_center);
+                let optsub = sub.subtract.optimized_for_block(block_center, size);
+
+                let subtract_d = optsub.distance(block_center);
                 let left2 = sub.left.optimized_for_block(block_center, size);
                 if subtract_d > size * SQRT3 * 2.0{
                     if left2.eq(&sub.left) {
@@ -378,11 +384,14 @@ impl DistanceFieldEnum {
                     }
                     return left2;
                 }
-                if left2.eq(&sub.left) {
+               
+                if left2.eq(&sub.left) && optsub.eq(&sub.subtract) {
                     return DistanceFieldEnum::Subtract(sub.clone());
                 }
-                DistanceFieldEnum::Subtract( Subtract {left : Rc::new(left2), subtract: sub.subtract.clone(), k: sub.k}).into()
                 
+                return DistanceFieldEnum::Subtract( Subtract {left : Rc::new(left2),
+                    subtract: sub.subtract.optimized_for_block(block_center, size).into(), k: sub.k}).into()
+               
             }
 
             DistanceFieldEnum::BoundsAdd(add, bounds) => {
@@ -479,6 +488,68 @@ impl DistanceFieldEnum {
                 };
                 return DistanceFieldEnum::BoundsAdd(new_add, bounds.clone());
             }
+            DistanceFieldEnum::Subtract(sub) => {
+                let left2 = sub.left.optimize_bounds();
+                let subbounds = sub.subtract.calculate_sphere_bounds();
+                println!("Subtract + add? {}", left2);
+                let mut new_left : DistanceFieldEnum = match &left2 {
+                    DistanceFieldEnum::Add(inner_add ) => {
+                        let left_bounds = inner_add.left.calculate_sphere_bounds();
+                        let right_bounds = inner_add.right.calculate_sphere_bounds();
+                        if !left_bounds.overlaps(&subbounds) {
+                            if !right_bounds.overlaps(&subbounds) {
+                                println!("none overlaps! {:?} {:?} {:?} {}", left_bounds, right_bounds, subbounds, (right_bounds.center - subbounds.center).length());
+                                // neither bounds overlaps the subtraction -> just delete it.
+                                DistanceFieldEnum::Add(inner_add.clone())
+                            }else {
+                                // left does not overlap -> move the subtraction into the right
+                                Add::new(inner_add.left.as_ref().clone(), Subtract::new(inner_add.right.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into())
+                                 .into()
+                            }
+                        }else if !right_bounds.overlaps(&subbounds) {
+                            // only right overlaps -> move it into the right.
+                            Add::new(Subtract::new(inner_add.left.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into(),
+                               inner_add.right.as_ref().clone()).into()
+                        }else{
+                            left2
+                        }
+                        
+                    },
+                    DistanceFieldEnum::BoundsAdd(inner_add, sphere ) => {
+                        let left_bounds = inner_add.left.calculate_sphere_bounds();
+                        let right_bounds = inner_add.right.calculate_sphere_bounds();
+                        if !left_bounds.overlaps(&subbounds) {
+                            if !right_bounds.overlaps(&subbounds) {
+                                println!("none overlaps! {:?} {:?} {:?} {}", left_bounds, right_bounds, subbounds, (right_bounds.center - subbounds.center).length());
+                                // neither bounds overlaps the subtraction -> just delete it.
+                                DistanceFieldEnum::Add(inner_add.clone())
+                            }else {
+                                // left does not overlap -> move the subtraction into the right
+                                Add::new(inner_add.left.as_ref().clone(), Subtract::new(inner_add.right.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into())
+                                 .into()
+                            }
+                        }else if !right_bounds.overlaps(&subbounds) {
+                            // only right overlaps -> move it into the right.
+                            Add::new(Subtract::new(inner_add.left.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into(),
+                               inner_add.right.as_ref().clone()).into()
+                        }else{
+                            left2
+                        }
+                    },
+
+                    _=> self.clone()
+                };
+
+                if let DistanceFieldEnum::Subtract(sub2) = &new_left{
+                    if let DistanceFieldEnum::Subtract(sub3) = sub2.left.as_ref() {
+                        let comb = sub3.subtract.insert_2(sub2.subtract.as_ref().clone())
+                            .optimize_bounds();
+                        new_left = Subtract::new(sub3.left.as_ref().clone(), comb, sub3.k).into();
+                    }
+                }
+
+                new_left
+            }
             _ => self.clone(),
         }
     }
@@ -489,13 +560,7 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Sphere(sphere) => sphere.color,
             DistanceFieldEnum::Aabb(aabb) => aabb.color,
             DistanceFieldEnum::Empty => Rgba([0, 0, 0, 0]),
-            DistanceFieldEnum::BoundsAdd(add, bounds) => {
-                let d1 = bounds.distance(pos);
-                if d1 > bounds.radius * 0.5 {
-                    return Rgba([0, 0, 0, 0]);
-                }
-                add.color(pos)
-            }
+            DistanceFieldEnum::BoundsAdd(add, _) => add.color(pos),
             DistanceFieldEnum::Gradient(gradient) => gradient.color(pos),
             
             DistanceFieldEnum::Noise(noise) => noise.color(pos),
@@ -566,6 +631,25 @@ pub fn build_test() -> DistanceFieldEnum {
     
 }
 
+pub fn build_test_solid() -> DistanceFieldEnum {
+    let aabb2 = Sphere::new(Vec3f::new(2.0, 0.0, 0.0), 1.0).color(Rgba([255, 255, 255, 255]));
+    
+
+    let sphere = Sphere::new(Vec3f::new(-2.0, 0.0, 0.0), 2.0).color(Rgba([255, 0, 0, 255]));
+
+
+    let sphere2 = Sphere::new(Vec3f::new(0.0, -200.0, 0.0), 190.0).color(Rgba([255, 0, 0, 255]));
+    
+
+    let sdf = DistanceFieldEnum::Empty {}
+        .insert_2(aabb2)
+        .insert_2(sphere)
+        .insert_2(sphere2);
+    return sdf;
+
+    
+}
+
 
 pub fn build_test2() -> DistanceFieldEnum {
     let mut sdf  = DistanceFieldEnum::Empty;
@@ -608,7 +692,7 @@ pub fn build_big(n : i32) -> DistanceFieldEnum {
     for x in 0..n{
         for y in 0..n {
             for z in 0..n {
-                let sphere = Sphere::new(Vec3f::new(x as f32* 3.0, y as f32* 3.0, z as f32 * 3.0), 2.0).color(Rgba([255, 0, 0, 255]));
+                let sphere = Sphere::new(Vec3f::new(x as f32* 3.0, y as f32* 3.0, z as f32 * 3.0), 3.0).color(Rgba([255, 0, 0, 255]));
                 sdf = sdf.insert_2(sphere);
             }
         }
@@ -634,9 +718,9 @@ impl fmt::Display for DistanceFieldEnum{
                 write!(f, "(AABB {} {})", aabb.center, aabb.radius)},
             DistanceFieldEnum::Add(add) => write!(f, "({}\n {}\n)", add.left, add.right),
             DistanceFieldEnum::BoundsAdd(a, b) => {write!(f, "(bounds-add {} {} {} {})", a.left, a.right, b.center, b.radius)},
-            DistanceFieldEnum::Gradient(_) => todo!(),
-            DistanceFieldEnum::Noise(_) => todo!(),
-            DistanceFieldEnum::Subtract(_) => todo!(),
+            DistanceFieldEnum::Gradient(g) => write!(f, "(gradient: ? {})", g.inner),
+            DistanceFieldEnum::Noise(n) => write!(f, "(noise {})", n.inner),
+            DistanceFieldEnum::Subtract(sub) => write!(f, "(subtract {} {})", sub.left, sub.subtract),
             DistanceFieldEnum::Empty => todo!(),
         }
     }
@@ -678,7 +762,7 @@ mod tests {
 
     #[test]
     fn test_build_big_optimize(){
-        let sdf = build_big(10);
+        let sdf = build_big(6);
         let sdf2 = sdf.optimized_for_block(Vec3::new(0.0, 0.0, 0.0), 5.0);
         println!("sdf2: {}", sdf2);
     }
@@ -699,9 +783,9 @@ mod tests {
         let c1 = sdfopt.distance(d1);
         let error = (a1 - c1) / a1;
         println!("{} {} {}", a1, c1 ,error);
-        return;
         
-        for _ in 0..10000000 {
+        
+        for _ in 0..1000 {
              
             let d = Vec3::new(rng.gen_range(-10.0..10.0), rng.gen_range(-10.0..10.0),rng.gen_range(-10.0..10.0));
             
@@ -725,10 +809,9 @@ mod tests {
         let sdf = build_big(4);
         let sdfopt = sdf.optimize_bounds();
         
-        
         let bounds =  sdf.calculate_sphere_bounds();
         let mut rng = thread_rng();
-        for _ in 0..10000000 {
+        for _ in 0..10000 {
             let size = rng.gen_range(1.0..10.0);
             let halfsize = size * 0.5;
             let d = Vec3::new(rng.gen_range(0.0..12.0), rng.gen_range(0.0..12.0),rng.gen_range(0.0..12.0));
@@ -754,6 +837,34 @@ mod tests {
             }
             
         }
+    }
+
+    fn run_test_on_range(ground_truth : DistanceFieldEnum, 
+        optimized_sdf : DistanceFieldEnum, 
+        center : Vec3, size: Vec3, n : i32, e : f32){
+        let radius = size * 0.5;
+        let mut rng = StdRng::seed_from_u64(2);
+
+        for i in 0..n {
+            let offset = radius.map(|x| rng.gen_range(-x..x));
+            let pos = center + offset;
+            let a = ground_truth.distance(pos);
+            let b = optimized_sdf.distance(pos);
+            assert!((b - a) / a < e);
+        }
+    }
+
+    #[test]
+    fn test_optimize_subtract(){
+        let sdf = DistanceFieldEnum::Empty
+            .insert_2(Sphere::new(Vec3::new(0.0, 0.0, 0.0), 1.0))
+            .insert_2(Sphere::new(Vec3::new(2.0, 0.0, 0.0), 1.0));
+        let sdf : DistanceFieldEnum = Subtract::new(sdf, Sphere::new(Vec3::new(3.0, 0.0, 0.0), 1.0), 0.0).into();
+
+        let opt = sdf.optimize_bounds().optimize_bounds();
+        println!("Opt: {}", opt);
+        run_test_on_range(sdf, opt, Vec3::new(1.0,0.0,0.0), Vec3::new(5.0, 5.0, 5.0), 1000, 0.2);
+
     }
 
 }

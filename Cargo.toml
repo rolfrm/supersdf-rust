@@ -26,6 +26,7 @@ kiss3d = "0.35.1"
 image = "0.24"
 rand = "0.8.5"
 noise = "0.8.2"
+cgmath = "0.18.0"
 
 [patch.crates-io]
 kiss3d = { git = "https://github.com/rolfrm/kiss3d.git", branch = "master" }

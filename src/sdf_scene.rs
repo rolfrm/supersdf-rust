@@ -1,7 +1,7 @@
 use crate::{sdf, vec3::Vec3};
 use sdf::*;
 
-use kiss3d::nalgebra::{Vector2};
+use kiss3d::{nalgebra::{Vector2}, camera::{Camera, ArcBall, FirstPerson}};
 
 type Vec3f = Vec3;
 type Vec2 = Vector2<f32>;
@@ -14,18 +14,73 @@ pub struct SdfKey {
     pub w: i32,
 }
 
+fn is_in_frustum<T : Camera>(cam: &T, pos : Vec3, size : f32) -> bool{
+ 
+    let mut min = Vec3::new(0.0, 0.0, 0.0);
+    let mut max = min;
+    for i in 0..8 {
+       let x = i & 1;
+       let y = (i >> 1) & 1;
+       let z = (i >> 2) & 1;
+       let v = pos + Vec3::new(x as f32 - 0.5,y as f32 - 0.5,z as f32 - 0.5) * size;
+       let v = cam.project_into_camera_space(&v.into());
+       if i == 0 {
+          min = v.into();
+          max = min;
+       }else{
+          min = min.min(v.into());
+          max = max.max(v.into());
+       }
+    }
+  
+    if min.x > 1.0 || max.x < -1.0 {
+         return false;
+    }
+    if min.y > 1.0 || max.y < -1.0 {
+         return false;
+    }
+    if min.z > 1.0 || max.z < -1.0 {
+       return false;
+    }
+  
+    return true;
+  }
+
+pub enum CameraEnum{
+    ArcBall(ArcBall),
+    FirstPerson(FirstPerson),
+    None
+}
+
+impl Into<CameraEnum> for &FirstPerson {
+    fn into(self) -> CameraEnum {
+        CameraEnum::FirstPerson(self.clone())
+    }
+}
+
+impl Into<CameraEnum> for &ArcBall {
+    fn into(self) -> CameraEnum {
+        CameraEnum::ArcBall(self.clone())
+    }
+}
+
 pub struct SdfScene {
     pub  sdf: DistanceFieldEnum,
     pub eye_pos: Vec3f,
     pub block_size: f32,
     pub render_blocks: Vec<(Vec3f, f32, SdfKey, DistanceFieldEnum, f32)>,
+    pub cam: CameraEnum
 }
 
 const SQRT3: f32 = 1.73205080757;
 impl SdfScene {
 
     pub fn new(sdf : DistanceFieldEnum) -> SdfScene {
-        SdfScene { sdf: sdf, eye_pos: Vec3::zeros(), block_size: 1.0, render_blocks: Vec::new() }
+        SdfScene { sdf: sdf, eye_pos: Vec3::zeros(), 
+            block_size: 1.0, 
+            render_blocks: Vec::new(),
+            cam : CameraEnum::None
+         }
     } 
 
     fn callback(
@@ -40,8 +95,12 @@ impl SdfScene {
         self.render_blocks.push((p, size, key, sdf.clone(), scale));
     }
 
-    fn skip_block(&self, _p: Vec3, _size: f32) -> bool {
-        false
+    fn skip_block(&self, p: Vec3, size: f32) -> bool {
+        match &self.cam {
+            CameraEnum::ArcBall(ab) => !is_in_frustum(ab, p, size * 2.0),
+            CameraEnum::FirstPerson(fp) => !is_in_frustum(fp, p, size* 2.0),
+            CameraEnum::None => false
+        }
     }
 
     pub fn iterate_scene(&mut self, p: Vec3, size: f32) {
@@ -60,6 +119,11 @@ impl SdfScene {
         if d > cell_size * SQRT3 {
             return;
         }
+        
+        if d < -cell_size * SQRT3 {
+            return;
+        }
+
         if cell_size < 0.9 {
             return;
         }
@@ -73,7 +137,7 @@ impl SdfScene {
         let cell_distance = (cell_position - self.eye_pos).length();
         
         // Calculate the LOD level based on the distance of the cell.
-        let lod_level = (cell_distance * 0.5 / self.block_size).log2().floor().max(0.0) * 0.4;
+        let lod_level = (0.05 * cell_distance / self.block_size).log2().floor().max(0.0);
         
         // Calculate the cell size. Farther away -> bigger blocks with lower resolution.
         let lod_cell_size = self.block_size * 2.0_f32.powf(lod_level);
