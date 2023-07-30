@@ -1,58 +1,144 @@
-use image::{Pixel, Rgba};
-use kiss3d::nalgebra as na;
-use kiss3d::nalgebra::{Vector3};
+
+use image::{Rgba};
 use noise::{NoiseFn, Perlin};
 use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
+use std::collections::HashSet;
 use std::fmt;
+use std::hash::Hash;
 //, Simplex, SuperSimplex};
 use std::rc::Rc;
 
 use crate::vec3::Vec3;
-type Vec3f = Vec3;
 
 const SQRT3: f32 = 1.73205080757;
 
-#[derive(Clone, PartialEq, Debug)]
-pub enum DistanceFieldEnum {
+const BIGPRIME : i64 = 1844674407370955155;
+
+    pub fn mix(a: i32, b: i32) -> i32{
+        let a = a as i64;
+        let b = b as i64;
+        let mut x = BIGPRIME;
+        for _ in 0..5 {
+            x = x.wrapping_mul(BIGPRIME).wrapping_add(a);
+            x = x.wrapping_mul(BIGPRIME).wrapping_add(b);
+        }
+        x as i32
+    }
+
+    trait Hash2 {
+        fn hash2(&self) -> i32;
+    }
+
+    impl Hash2 for f32 {
+        fn hash2(&self) -> i32 {
+            f32::to_bits(*self) as i32
+        }
+    }
+
+    impl Hash2 for Vec3{
+        fn hash2(&self) -> i32 {
+            mix(mix(self.x.hash2(), self.y.hash2()), self.z.hash2())
+        }
+    }
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Primitive{
     Sphere(Sphere),
-    Aabb(Aabb),
+    Aabb(Aabb)
+}
+
+impl Hash for Primitive {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+    }
+}
+
+impl Primitive{
+    fn distance(&self, p : Vec3) -> f32 {
+        
+        match self{
+            Primitive::Sphere(s) => s.distance(p),
+            Primitive::Aabb(s) => s.distance(p),
+        }
+    }
+
+    fn hash(&self) -> i32 {
+        match self {
+            Primitive::Sphere(s) => mix(s.center.hash2(),s.radius.hash2()),
+            Primitive::Aabb(s) => mix(s.center.hash2(), s.radius.hash2()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Coloring{
+    SolidColor(Rgba<u8>),
+    Gradient(Gradient),
+    Noise(Noise)
+}
+impl Hash2 for Rgba<u8> {
+    fn hash2(&self) -> i32 {
+        mix(mix(self[0] as i32, self[1] as i32), mix(self[2] as i32, self[3] as i32))
+    }
+}
+
+impl Coloring {
+    pub fn color(&self, p : Vec3) ->Rgba<u8> {
+        match self {
+            Coloring::SolidColor(c) => *c,
+            Coloring::Gradient(g) => g.color(p),
+            Coloring::Noise(n) => n.color(p),
+        }
+    }
+
+    pub fn hash(&self) -> i32 {
+        match self {
+            Coloring::SolidColor(v) => v.hash2(),
+            Coloring::Gradient(v) => mix(mix(v.c1.hash2(), v.c2.hash2()), mix(v.p1.hash2(), v.p2.hash2())),
+            Coloring::Noise(v) => mix(mix(v.c1.hash2(), v.c2.hash2()), v.seed as i32)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DistanceFieldEnum {
+    Primitive(Primitive),
+    Coloring(Coloring, Rc<DistanceFieldEnum>),
     Add(Add),
     BoundsAdd(Add, Sphere),
-    Gradient(Gradient),
-    Noise(Noise),
     Subtract(Subtract),
-    Empty,
+    Empty
 }
 
 pub trait DistanceField {
-    fn distance(&self, pos: Vec3f) -> f32 {
+    fn distance(&self, pos: Vec3) -> f32 {
         return f32::INFINITY;
     }
 }
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Sphere {
-    center: Vec3f,
-    radius: f32,
-    color: Rgba<u8>,
+    center: Vec3,
+    radius: f32
 }
 
+
+
 impl Sphere {
-    pub fn new(center: Vec3f, radius: f32) -> Sphere {
+    pub fn new(center: Vec3, radius: f32) -> Sphere {
         Sphere {
             center: center,
-            radius: radius,
-            color: Rgba([0, 0, 0, 0]),
+            radius: radius
         }
     }
 
-    pub fn color(&self, color: Rgba<u8>) -> Sphere {
-        Sphere {
+    pub fn color(&self, color: Rgba<u8>) -> DistanceFieldEnum {
+        DistanceFieldEnum::Coloring(Coloring::SolidColor(color),
+        Rc::new(Sphere {
             center: self.center,
-            radius: self.radius,
-            color: color,
-        }
+            radius: self.radius
+        }.into()))
     }
 
     pub fn two_sphere_bounds(a: &Sphere, b: &Sphere) -> Sphere {
@@ -80,7 +166,7 @@ impl Sphere {
 
 impl Into<DistanceFieldEnum> for Sphere {
     fn into(self) -> DistanceFieldEnum {
-        DistanceFieldEnum::Sphere(self)
+        DistanceFieldEnum::Primitive(Primitive::Sphere(self))
     }
 }
 
@@ -88,41 +174,31 @@ fn vec3_max(a: Vec3, b: Vec3) -> Vec3 {
     Vec3::new(f32::max(a.x, b.x), f32::max(a.y, b.y), f32::max(a.z, b.z))
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Hash)]
 pub struct Aabb {
     radius: Vec3,
-    center: Vec3,
-    color: Rgba<u8>
+    center: Vec3
 }
 
 impl Aabb {
     pub fn new(center: Vec3, radius: Vec3) -> Aabb {
         Aabb {
             radius: radius,
-            center: center,
-            color: Rgba([0, 0, 0, 0]),
+            center: center
         }
     }
 
-    pub fn distance(&self, p: Vec3f) -> f32 {
+    pub fn distance(&self, p: Vec3) -> f32 {
         let p2 = p - self.center;
         let q = p2.abs() - self.radius;
         return vec3_max(q, Vec3::zeros()).length()
             + f32::min(f32::max(q.x, f32::max(q.y, q.z)), 0.0);
     }
-
-    pub fn color(&self, color: Rgba<u8>) -> Aabb {
-        Aabb {
-            radius: self.radius,
-            center: self.center,
-            color: color,
-        }
-    }
 }
 
 impl Into<DistanceFieldEnum> for Aabb {
     fn into(self) -> DistanceFieldEnum {
-        DistanceFieldEnum::Aabb(self)
+        DistanceFieldEnum::Primitive(Primitive::Aabb(self))
     }
 }
 
@@ -132,7 +208,6 @@ pub struct Gradient {
     p2: Vec3,
     c1: Rgba<u8>,
     c2: Rgba<u8>,
-    inner: Rc<DistanceFieldEnum>,
 }
 
 impl Gradient {
@@ -142,59 +217,49 @@ impl Gradient {
         c1: Rgba<u8>,
         c2: Rgba<u8>,
         inner: Rc<DistanceFieldEnum>,
-    ) -> Gradient {
-        Gradient {
+    ) -> DistanceFieldEnum {
+        DistanceFieldEnum::Coloring(Coloring::Gradient(Gradient {
             p1: p1,
             p2: p2,
             c1: c1,
             c2: c2,
-            inner: inner,
-        }
+        }),inner)
     }
 
     pub fn color(&self, p: Vec3) -> Rgba<u8> {
         let pt2 = p - self.p1;
         let l2 = (self.p1 - self.p2).length_squared();
         let f = (self.p2 - self.p1).dot(pt2) / l2;
-        let mut colorbase = self.inner.color(p);
         let color = rgba_interp(self.c1, self.c2, f);
-        colorbase.blend(&color);
-        return colorbase;
+        return color;
     }
 }
 
-impl Into<DistanceFieldEnum> for Gradient {
-    fn into(self) -> DistanceFieldEnum {
-        DistanceFieldEnum::Gradient(self)
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct Noise {
     noise: Rc<Perlin>,
     seed: u32,
     c1: Rgba<u8>,
-    c2: Rgba<u8>,
-    inner: Rc<DistanceFieldEnum>,
+    c2: Rgba<u8>
 }
+
 impl PartialEq for Noise {
     fn eq(&self, other: &Self) -> bool {
         return self.seed == other.seed
             && self.c1 == other.c1
             && self.c2 == other.c2
-            && self.inner == other.inner;
     }
 }
 
 impl Noise {
-    pub fn new(seed: u32, c1: Rgba<u8>, c2: Rgba<u8>, inner: DistanceFieldEnum) -> Noise {
-        Noise {
+    pub fn new(seed: u32, c1: Rgba<u8>, c2: Rgba<u8>, inner: DistanceFieldEnum) -> DistanceFieldEnum {
+        DistanceFieldEnum::Coloring(Coloring::Noise(Noise {
             seed: seed,
             noise: Rc::new(Perlin::new(seed)),
             c1: c1,
-            c2: c2,
-            inner: Rc::new(inner),
-        }
+            c2: c2
+        }), Rc::new(inner))
     }
 
     fn color(&self, pos: Vec3) -> Rgba<u8> {
@@ -211,20 +276,15 @@ impl Noise {
             .noise
             .get([pos3.x as f64, pos3.y as f64, pos3.z as f64]);
         let color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
-        if color[3] < 255 {
-            let mut colorbase = self.inner.color(pos);
-            colorbase.blend(&color);
-            return colorbase;
-        }
+        //if color[3] < 255 {
+        //    let mut colorbase = self.inner.color(pos);
+        //    colorbase.blend(&color);
+        //    return colorbase;
+        //}
         return color;
     }
 }
 
-impl Into<DistanceFieldEnum> for Noise {
-    fn into(self) -> DistanceFieldEnum {
-        DistanceFieldEnum::Noise(self)
-    }
-}
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Add {
@@ -247,11 +307,11 @@ impl Add {
         }
     }
 
-    fn distance(&self, pos: Vec3f) -> f32 {
+    fn distance(&self, pos: Vec3) -> f32 {
         f32::min(self.left.distance(pos), self.right.distance(pos))
     }
 
-    fn color(&self, p: Vec3f) -> Rgba<u8> {
+    fn color(&self, p: Vec3) -> Rgba<u8> {
         let ld = self.left.distance(p);
         let rd = self.right.distance(p);
         if ld < rd {
@@ -269,20 +329,18 @@ impl Into<DistanceFieldEnum> for Add {
 }
 
 impl DistanceField for Sphere {
-    fn distance(&self, pos: Vec3f) -> f32 {
+    fn distance(&self, pos: Vec3) -> f32 {
         (pos - self.center).length() - self.radius
     }
 }
 impl DistanceField for DistanceFieldEnum {
-    fn distance(&self, pos: Vec3f) -> f32 {
+    fn distance(&self, pos: Vec3) -> f32 {
         match self {
             DistanceFieldEnum::Add(add) => add.distance(pos),
             DistanceFieldEnum::Subtract(sub) => sub.distance(pos),
-            DistanceFieldEnum::Sphere(sphere) => sphere.distance(pos),
-            DistanceFieldEnum::Aabb(aabb) => aabb.distance(pos),
+            DistanceFieldEnum::Primitive(primitive) => primitive.distance(pos),
             DistanceFieldEnum::Empty => f32::INFINITY,
-            DistanceFieldEnum::Gradient(gradient) => gradient.inner.distance(pos),
-            DistanceFieldEnum::Noise(noise) => noise.inner.distance(pos),
+            DistanceFieldEnum::Coloring(color, inner) => inner.distance(pos),
             DistanceFieldEnum::BoundsAdd(add, bounds) => {
                 let d1 = bounds.distance(pos);
                 if d1 > bounds.radius * SQRT3{
@@ -295,7 +353,7 @@ impl DistanceField for DistanceFieldEnum {
 }
 
 impl DistanceField for Add {
-    fn distance(&self, pos: Vec3f) -> f32 {
+    fn distance(&self, pos: Vec3) -> f32 {
         f32::min(self.left.distance(pos), self.right.distance(pos))
     }
 }
@@ -310,7 +368,7 @@ pub struct Subtract {
 fn f32mixf( x : f32,  y : f32,  a : f32) -> f32 { x * (1.0 - a) + y * a }
 
 impl DistanceField for Subtract {
-    fn distance(&self, pos : Vec3f) -> f32 {
+    fn distance(&self, pos : Vec3) -> f32 {
     let k = self.k;
     let d1 = self.left.distance(pos);
     let d2 = self.subtract.distance(pos);
@@ -332,7 +390,7 @@ impl Into<DistanceFieldEnum> for Subtract {
     }
 }
 impl DistanceFieldEnum {
-    pub fn cast_ray(&self, pos: Vec3f, dir: Vec3f, max_dist: f32) -> Option<(f32, Vec3f)> {
+    pub fn cast_ray(&self, pos: Vec3, dir: Vec3, max_dist: f32) -> Option<(f32, Vec3)> {
         let mut total_distance = 0.0;
         let mut mpos = pos;
         loop {
@@ -349,7 +407,7 @@ impl DistanceFieldEnum {
         }
     }
 
-    pub fn optimize_add(add: &Add, block_center: Vec3f, size: f32) -> DistanceFieldEnum {
+    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32) -> DistanceFieldEnum {
         
         let left_opt = add.left.optimized_for_block(block_center, size);
         let right_opt = add.right.optimized_for_block(block_center, size);
@@ -361,14 +419,14 @@ impl DistanceFieldEnum {
         if right_d > left_d + size * SQRT3{
             return left_opt;
         }
-        if left_opt.eq(&add.left) && right_opt.eq(&add.right) {
+        if left_opt.ref_eq(&add.left) && right_opt.ref_eq(&add.right) {
             let add2 = add.clone();
             return DistanceFieldEnum::Add(add2);
         }
         return Add::new(left_opt, right_opt).into();
     }
 
-    pub fn optimized_for_block(&self, block_center: Vec3f, size: f32) -> DistanceFieldEnum {
+    pub fn optimized_for_block(&self, block_center: Vec3, size: f32) -> DistanceFieldEnum {
         match self {
             DistanceFieldEnum::Add(add) => {
                 DistanceFieldEnum::optimize_add(add, block_center,size)
@@ -387,10 +445,16 @@ impl DistanceFieldEnum {
                
                 if left2.eq(&sub.left) && optsub.eq(&sub.subtract) {
                     return DistanceFieldEnum::Subtract(sub.clone());
+                }else if left2.eq(&sub.left){
+                    return DistanceFieldEnum::Subtract( Subtract {left : sub.left.clone(),
+                        subtract: Rc::new(optsub), k: sub.k}).into()
+                }else if optsub.eq(&sub.subtract){
+                    return DistanceFieldEnum::Subtract( Subtract {left : sub.left.clone(),
+                        subtract: sub.subtract.clone(), k: sub.k}).into()
                 }
                 
                 return DistanceFieldEnum::Subtract( Subtract {left : Rc::new(left2),
-                    subtract: sub.subtract.optimized_for_block(block_center, size).into(), k: sub.k}).into()
+                    subtract: Rc::new(optsub), k: sub.k}).into()
                
             }
 
@@ -409,14 +473,20 @@ impl DistanceFieldEnum {
                 }else{
                     self.clone()
                 }
-
+            },
+            DistanceFieldEnum::Coloring(c, i) => {
+                let opt = i.optimize_bounds();
+                if opt.eq(i) {
+                    return self.clone();
+                }
+                return DistanceFieldEnum::Coloring(c.clone(), Rc::new(opt));
             }
             
             _ => return self.clone(),
         }
     }
 
-    pub fn distance_and_optimize(&self, pos: Vec3f, size: f32) -> (f32, DistanceFieldEnum) {
+    pub fn distance_and_optimize(&self, pos: Vec3, size: f32) -> (f32, DistanceFieldEnum) {
         let pos2 : Vec3 = pos.map(|x| f32::floor(x / size) * size);
         let sdf2 =
             self.optimized_for_block(pos2 + Vec3::new(size * 0.5, size * 0.5, size * 0.5), size);
@@ -444,7 +514,7 @@ impl DistanceFieldEnum {
                 
                 if d1 < d2 && d1 < l3 {
                     return Add{ left : Rc::new(add.left.insert_2(esdf.clone())), right: add.right.clone()}.into();
-                }else if(d2 < d1 && d2 < l3){
+                }else if d2 < d1 && d2 < l3 {
                     return Add{ right : Rc::new(add.right.insert_2(esdf)), left: add.left.clone()}.into();
                 }
                 return self.insert(esdf.clone());
@@ -456,12 +526,15 @@ impl DistanceFieldEnum {
 
     pub fn calculate_sphere_bounds(&self) -> Sphere {
         match self {
-            DistanceFieldEnum::Sphere(sphere) => sphere.clone(),
-            DistanceFieldEnum::Aabb(aabb) => Sphere::new(aabb.center, aabb.radius.length()),
+            DistanceFieldEnum::Primitive(p) =>{
+                match p {
+                    Primitive::Sphere(s) => s.clone(),
+                    Primitive::Aabb(aabb) => Sphere::new(aabb.center, aabb.radius.length()),
+                }
+            },
             DistanceFieldEnum::BoundsAdd(_, sphere) => sphere.clone(),
-            DistanceFieldEnum::Empty => Sphere::new(Vec3f::zeros(), f32::INFINITY),
-            DistanceFieldEnum::Gradient(gradient) => gradient.inner.calculate_sphere_bounds(),
-            DistanceFieldEnum::Noise(noise) => noise.inner.calculate_sphere_bounds(),
+            DistanceFieldEnum::Empty => Sphere::new(Vec3::zeros(), f32::INFINITY),
+            DistanceFieldEnum::Coloring(_,inner) => inner.calculate_sphere_bounds(),
             DistanceFieldEnum::Add(add) => {
                 let left = add.left.calculate_sphere_bounds();
                 let right = add.right.calculate_sphere_bounds();
@@ -554,21 +627,18 @@ impl DistanceFieldEnum {
         }
     }
 
-    pub fn color(&self, pos: Vec3f) -> Rgba<u8> {
+    pub fn color(&self, pos: Vec3) -> Rgba<u8> {
         match self {
             DistanceFieldEnum::Add(add) => add.color(pos),
-            DistanceFieldEnum::Sphere(sphere) => sphere.color,
-            DistanceFieldEnum::Aabb(aabb) => aabb.color,
+            DistanceFieldEnum::Primitive(_) => Rgba([255,0,0,255]),
             DistanceFieldEnum::Empty => Rgba([0, 0, 0, 0]),
             DistanceFieldEnum::BoundsAdd(add, _) => add.color(pos),
-            DistanceFieldEnum::Gradient(gradient) => gradient.color(pos),
-            
-            DistanceFieldEnum::Noise(noise) => noise.color(pos),
+            DistanceFieldEnum::Coloring(c, inner) => c.color(pos),
             DistanceFieldEnum::Subtract(sub) => sub.left.color(pos)
         }
     }
 
-    pub fn gradient(&self, pos: Vec3f, size: f32) -> Vec3f {
+    pub fn gradient(&self, pos: Vec3, size: f32) -> Vec3 {
         let mut ptx = pos;
         let mut pty = pos;
         let mut ptz = pos;
@@ -593,11 +663,116 @@ impl DistanceFieldEnum {
         let x = dv / l;
         return x;
     }
+
+    fn ref_eq(&self, other: &Self) -> bool {
+        return match self {
+            DistanceFieldEnum::Primitive(s) => {
+                if let DistanceFieldEnum::Primitive(s2) = other {
+                    return s.eq(s2);
+                }
+                false
+            },
+            DistanceFieldEnum::Add(a) => {
+                if let DistanceFieldEnum::Add(b) = other {
+                    return Rc::<DistanceFieldEnum>::ptr_eq(&a.left, &b.left)
+                    &&Rc::<DistanceFieldEnum>::ptr_eq(&a.right, &b.right);
+                }
+                false
+            },
+            DistanceFieldEnum::BoundsAdd(a, _) => {
+                if let DistanceFieldEnum::BoundsAdd(b, _) = other {
+                    return Rc::<DistanceFieldEnum>::ptr_eq(&a.left, &b.left)
+                    &&Rc::<DistanceFieldEnum>::ptr_eq(&a.right, &b.right);
+                }
+                false
+            },
+            DistanceFieldEnum::Coloring(a, i) => {
+                if let DistanceFieldEnum::Coloring(b, i2) = other {
+                    return Rc::<DistanceFieldEnum>::ptr_eq(&i,&i2) && b.eq(&b);
+                }
+                false
+            },
+            DistanceFieldEnum::Subtract(a) => {
+                if let DistanceFieldEnum::Subtract(b) = other {
+                    return Rc::<DistanceFieldEnum>::ptr_eq(&a.left,&b.left) && 
+                        Rc::<DistanceFieldEnum>::ptr_eq(&a.subtract,&b.subtract);
+                }
+                false
+                
+            },
+            DistanceFieldEnum::Empty => {
+                if let DistanceFieldEnum::Empty = other {
+                    return true;
+                }
+                return false;
+                
+            },
+        }
+    }
+
+    pub fn build_map(&self, m : &mut HashSet<DistanceFieldEnum>){
+        
+        if !m.contains(self) && m.insert(self.clone()){
+            match self {
+                DistanceFieldEnum::Primitive(_) => {},
+                DistanceFieldEnum::Coloring(_, inner) => inner.build_map(m),
+                DistanceFieldEnum::Add(add) => {
+                    add.left.build_map(m);
+                    add.right.build_map(m);
+                },
+                DistanceFieldEnum::BoundsAdd(add, _) => {
+                    add.left.build_map(m);
+                    add.right.build_map(m);
+            
+                },
+                DistanceFieldEnum::Subtract(sub) => {
+                    sub.left.build_map(m);
+                    sub.subtract.build_map(m);
+                },
+                DistanceFieldEnum::Empty => todo!(),
+            }
+        }
+    }
+    pub fn cached(&self, m : &mut HashSet<DistanceFieldEnum>) -> DistanceFieldEnum{
+        
+        if !m.contains(self) && m.insert(self.clone()){
+            match self {
+                DistanceFieldEnum::Primitive(_) => {},
+                DistanceFieldEnum::Coloring(_, inner) => inner.build_map(m),
+                DistanceFieldEnum::Add(add) => {
+                    add.left.build_map(m);
+                    add.right.build_map(m);
+                },
+                DistanceFieldEnum::BoundsAdd(add, _) => {
+                    add.left.build_map(m);
+                    add.right.build_map(m);
+            
+                },
+                DistanceFieldEnum::Subtract(sub) => {
+                    sub.left.build_map(m);
+                    sub.subtract.build_map(m);
+                },
+                DistanceFieldEnum::Empty => todo!(),
+            }
+        }
+        return m.get(&self).unwrap().clone();
+    }
+
+    
 }
 
+impl Hash for DistanceFieldEnum {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+    }
+}
+
+impl Eq for DistanceFieldEnum {
+    
+}
 
 pub fn build_test() -> DistanceFieldEnum {
-    let aabb2 = Sphere::new(Vec3f::new(2.0, 0.0, 0.0), 1.0).color(Rgba([255, 255, 255, 255]));
+    let aabb2 = Sphere::new(Vec3::new(2.0, 0.0, 0.0), 1.0);
     let grad = Noise::new(
         1543,
         Rgba([255, 255, 255, 255]),
@@ -605,7 +780,7 @@ pub fn build_test() -> DistanceFieldEnum {
         aabb2.into(),
     );
 
-    let sphere = Sphere::new(Vec3f::new(-2.0, 0.0, 0.0), 2.0).color(Rgba([255, 0, 0, 255]));
+    let sphere = Sphere::new(Vec3::new(-2.0, 0.0, 0.0), 2.0);
 
     let noise = Noise::new(
         123,
@@ -614,7 +789,7 @@ pub fn build_test() -> DistanceFieldEnum {
         sphere.into(),
     );
 
-    let sphere2 = Sphere::new(Vec3f::new(0.0, -200.0, 0.0), 190.0).color(Rgba([255, 0, 0, 255]));
+    let sphere2 = Sphere::new(Vec3::new(0.0, -200.0, 0.0), 190.0);
     let noise2 = Noise::new(
         123,
         Rgba([255, 155, 55, 255]),
@@ -632,13 +807,13 @@ pub fn build_test() -> DistanceFieldEnum {
 }
 
 pub fn build_test_solid() -> DistanceFieldEnum {
-    let aabb2 = Sphere::new(Vec3f::new(2.0, 0.0, 0.0), 1.0).color(Rgba([255, 255, 255, 255]));
+    let aabb2 = Sphere::new(Vec3::new(2.0, 0.0, 0.0), 1.0).color(Rgba([255, 255, 255, 255]));
     
 
-    let sphere = Sphere::new(Vec3f::new(-2.0, 0.0, 0.0), 2.0).color(Rgba([255, 0, 0, 255]));
+    let sphere = Sphere::new(Vec3::new(-2.0, 0.0, 0.0), 2.0).color(Rgba([255, 0, 0, 255]));
 
 
-    let sphere2 = Sphere::new(Vec3f::new(0.0, -200.0, 0.0), 190.0).color(Rgba([255, 0, 0, 255]));
+    let sphere2 = Sphere::new(Vec3::new(0.0, -200.0, 0.0), 190.0).color(Rgba([255, 0, 0, 255]));
     
 
     let sdf = DistanceFieldEnum::Empty {}
@@ -666,7 +841,7 @@ pub fn build_test2() -> DistanceFieldEnum {
             v.shuffle(&mut rng);
     
             for z in v.iter() {
-                let sphere = Sphere::new(Vec3f::new(*x as f32* 5.0, *y as f32* 5.0, *z as f32 * 5.0), 2.0).color(Rgba([255, 0, 0, 255]));
+                let sphere = Sphere::new(Vec3::new(*x as f32* 5.0, *y as f32* 5.0, *z as f32 * 5.0), 2.0).color(Rgba([255, 0, 0, 255]));
                 sdf = sdf.insert_2(sphere);
             }
         }
@@ -677,8 +852,8 @@ pub fn build_test2() -> DistanceFieldEnum {
 
 pub fn build_test3() -> DistanceFieldEnum {
     let mut sdf  = DistanceFieldEnum::Empty;
-    sdf = sdf.insert_2(Sphere::new(Vec3f::new(0.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
-    sdf = sdf.insert_2(Sphere::new(Vec3f::new(25.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
+    sdf = sdf.insert_2(Sphere::new(Vec3::new(0.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
+    sdf = sdf.insert_2(Sphere::new(Vec3::new(25.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
     //sdf = sdf.insert_2(Sphere::new(Vec3f::new(1.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
     //sdf = sdf.insert_2(Sphere::new(Vec3f::new(6.0,0.0,0.0), 2.0).color(Rgba([255, 0, 0, 255])));
     
@@ -692,12 +867,12 @@ pub fn build_big(n : i32) -> DistanceFieldEnum {
     for x in 0..n{
         for y in 0..n {
             for z in 0..n {
-                let sphere = Sphere::new(Vec3f::new(x as f32* 3.0, y as f32* 3.0, z as f32 * 3.0), 3.0).color(Rgba([255, 0, 0, 255]));
+                let sphere = Sphere::new(Vec3::new(x as f32* 3.0, y as f32* 3.0, z as f32 * 3.0), 3.0).color(Rgba([255, 0, 0, 255]));
                 sdf = sdf.insert_2(sphere);
             }
         }
     }
-    
+    sdf = DistanceFieldEnum::Coloring(Coloring::SolidColor(Rgba([0,255,255,255])), Rc::new(sdf));
     return sdf;
 }
 
@@ -709,17 +884,21 @@ fn fmt_rgba(rgba: Rgba<u8>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 impl fmt::Display for DistanceFieldEnum{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            DistanceFieldEnum::Sphere(sphere) =>{ 
-                write!(f, "(Sphere {} {})", sphere.center, sphere.radius)
-            
+            DistanceFieldEnum::Primitive(primitive) => {
+                match primitive {
+                    Primitive::Sphere(sphere) => write!(f, "(Sphere {} {})", sphere.center, sphere.radius),
+                    Primitive::Aabb(aabb) => write!(f, "(AABB {} {})", aabb.center, aabb.radius),
+                }
             },
-            DistanceFieldEnum::Aabb(aabb) => 
-            {
-                write!(f, "(AABB {} {})", aabb.center, aabb.radius)},
             DistanceFieldEnum::Add(add) => write!(f, "({}\n {}\n)", add.left, add.right),
             DistanceFieldEnum::BoundsAdd(a, b) => {write!(f, "(bounds-add {} {} {} {})", a.left, a.right, b.center, b.radius)},
-            DistanceFieldEnum::Gradient(g) => write!(f, "(gradient: ? {})", g.inner),
-            DistanceFieldEnum::Noise(n) => write!(f, "(noise {})", n.inner),
+            DistanceFieldEnum::Coloring(c, inner) => {
+                match c {
+                    Coloring::SolidColor(c) => write!(f, "(color: [{} {} {} {}] {})", c[0], c[1], c[2], c[3], inner),
+                    Coloring::Gradient(g) => write!(f, "(gradient: ? {})", inner),
+                    Coloring::Noise(_) => write!(f, "(noise: ? {})", inner)
+                }
+            },
             DistanceFieldEnum::Subtract(sub) => write!(f, "(subtract {} {})", sub.left, sub.subtract),
             DistanceFieldEnum::Empty => todo!(),
         }
@@ -728,6 +907,8 @@ impl fmt::Display for DistanceFieldEnum{
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
+
     use rand::{rngs::{ThreadRng, StdRng}, SeedableRng};
 
     use super::*;
@@ -864,7 +1045,32 @@ mod tests {
         let opt = sdf.optimize_bounds().optimize_bounds();
         println!("Opt: {}", opt);
         run_test_on_range(sdf, opt, Vec3::new(1.0,0.0,0.0), Vec3::new(5.0, 5.0, 5.0), 1000, 0.2);
-
     }
+
+    
+
+    #[test]
+    fn test_sdf_hashing(){
+        let mut map = HashSet::new();
+        let sdf = DistanceFieldEnum::Empty
+            .insert_2(Sphere::new(Vec3::new(1.0, 0.0, 5.0), 1.0))
+            .insert_2(Sphere::new(Vec3::new(2.0, 1.0, 2.0), 1.0));
+        let sdf2 = DistanceFieldEnum::Empty
+            .insert_2(Sphere::new(Vec3::new(1.0, 0.0, 5.0), 1.0))
+            .insert_2(Sphere::new(Vec3::new(3.0, 1.0, 2.0), 1.0));
+        let sdf4 = DistanceFieldEnum::Empty
+            .insert_2(Sphere::new(Vec3::new(1.0, 0.0, 5.0), 1.0))
+            .insert_2(Sphere::new(Vec3::new(3.0, 1.0, 2.0), 1.0));
+        
+        sdf.build_map(&mut map);
+        sdf2.build_map(&mut map);
+
+        let sdf3 = map.get(&sdf4).unwrap();
+        &sdf.clone().build_map(&mut map);
+
+        println!(">> {}", map.len())
+        
+    }
+
 
 }

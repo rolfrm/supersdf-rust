@@ -1,7 +1,7 @@
 use crate::{sdf, vec3::Vec3};
 use sdf::*;
 
-use kiss3d::{nalgebra::{Vector2}, camera::{Camera, ArcBall, FirstPerson}};
+use kiss3d::{nalgebra::{Vector2, Point3, Matrix4}, camera::{Camera, ArcBall, FirstPerson}};
 
 type Vec3f = Vec3;
 type Vec2 = Vector2<f32>;
@@ -14,17 +14,27 @@ pub struct SdfKey {
     pub w: i32,
 }
 
-fn is_in_frustum<T : Camera>(cam: &T, pos : Vec3, size : f32) -> bool{
+fn is_in_frustum(cam: &Matrix4<f32>, pos : Vec3, size : f32) -> bool{
  
     let mut min = Vec3::new(0.0, 0.0, 0.0);
     let mut max = min;
+    let mut first = true;
     for i in 0..8 {
        let x = i & 1;
        let y = (i >> 1) & 1;
        let z = (i >> 2) & 1;
        let v = pos + Vec3::new(x as f32 - 0.5,y as f32 - 0.5,z as f32 - 0.5) * size;
-       let v = cam.project_into_camera_space(&v.into());
-       if i == 0 {
+       let v2 : Point3<f32> = v.into();
+       let v3 = (cam * v2.to_homogeneous());
+       let v4 = Point3::from_homogeneous(v3);
+       if let None = v4 {
+        println!("Issue: {:?}", v3);
+          continue;
+       }
+       let v: Vec3 = v4.unwrap().into();
+
+       if first {
+          first = false;
           min = v.into();
           max = min;
        }else{
@@ -69,7 +79,7 @@ pub struct SdfScene {
     pub eye_pos: Vec3f,
     pub block_size: f32,
     pub render_blocks: Vec<(Vec3f, f32, SdfKey, DistanceFieldEnum, f32)>,
-    pub cam: CameraEnum
+    pub cam: Matrix4<f32>
 }
 
 const SQRT3: f32 = 1.73205080757;
@@ -79,7 +89,7 @@ impl SdfScene {
         SdfScene { sdf: sdf, eye_pos: Vec3::zeros(), 
             block_size: 1.0, 
             render_blocks: Vec::new(),
-            cam : CameraEnum::None
+            cam : Matrix4::identity()
          }
     } 
 
@@ -96,11 +106,7 @@ impl SdfScene {
     }
 
     fn skip_block(&self, p: Vec3, size: f32) -> bool {
-        match &self.cam {
-            CameraEnum::ArcBall(ab) => !is_in_frustum(ab, p, size * 2.0),
-            CameraEnum::FirstPerson(fp) => !is_in_frustum(fp, p, size* 2.0),
-            CameraEnum::None => false
-        }
+        !is_in_frustum(&self.cam, p, size * 2.0)
     }
 
     pub fn iterate_scene(&mut self, p: Vec3, size: f32) {
@@ -175,6 +181,8 @@ impl SdfScene {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::identity;
+
     use super::*;
 
 
@@ -188,6 +196,7 @@ mod tests {
             eye_pos: Vec3::zeros(),
             block_size: 2.0,
             render_blocks: Vec::new(),
+            cam: Matrix4::identity()
         };
 
         sdf_iterator.iterate_scene(Vec3::new(0.0, 0.0, 0.0), 64.0);

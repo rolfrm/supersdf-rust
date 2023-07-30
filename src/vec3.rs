@@ -1,4 +1,4 @@
-use std::{ops::{Add, Sub, Mul, Div}, fmt};
+use std::{ops::{Add, Sub, Mul, Div}, fmt, hash::Hasher, hash::Hash};
 use kiss3d::nalgebra::{Point3, Vector3};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -6,6 +6,17 @@ pub struct Vec3{
     pub x : f32,
     pub y : f32,
     pub z : f32
+}
+
+impl Hash for Vec3 {
+    fn hash<H>(&self, state: &mut H)
+       where H: Hasher{
+        state.write_i32((self.x * 10.0) as i32);
+        state.write_i32((self.y * 10.0) as i32);
+        state.write_i32((self.z * 10.0) as i32);
+        
+       }
+
 }
 
 impl Vec3 {
