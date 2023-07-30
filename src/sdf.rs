@@ -648,7 +648,7 @@ impl DistanceFieldEnum {
     }
 
     pub fn gradient(&self, pos: Vec3, size: f32) -> Vec3 {
-        let focus = self.distance_and_optimize(pos, size, &mut HashSet::new()).1;
+        let focus = self.optimized_for_block(pos, size, &mut HashSet::new());
         let mut ptx = pos;
         let mut pty = pos;
         let mut ptz = pos;
@@ -1151,7 +1151,7 @@ mod tests {
     }
     #[test]
     fn test_super_gradient2(){
-        let sdf = build_big(10);
+        let sdf = build_big(3);
         
         //let sdf = sdf.insert_2(Sphere::new(Vec3::new(31.0,0.0,0.0), 1.0));
         println!("{}", sdf.size());
@@ -1160,10 +1160,11 @@ mod tests {
         if let Some(a) = sdf.first_add() {
             println!("Balanced? {} {}", a.left.size(),  a.right);
         }
+        let pos = Vec3::new(10.0, 10.0, 0.0);
         println!("optimizing:");
-        let focus = sdf.distance_and_optimize(Vec3::new(5.0, 5.0, 5.0), 0.001, &mut HashSet::new()).1;
+        let focus = sdf.distance_and_optimize(pos, 0.001, &mut HashSet::new()).1;
         
-        let g = sdf.gradient(Vec3::new(-3.0, -3.0, -3.0), 0.001);
+        let g = sdf.gradient(pos, 0.001);
         println!("focus: {} {}", g, focus);
         
     }

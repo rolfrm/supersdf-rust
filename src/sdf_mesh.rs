@@ -146,7 +146,7 @@ impl VertexesList {
             let col = (facei % columns) as f64;
             let rowf = row / (columns as f64);
             let colf = col / (columns as f64);
-            let normal = sdf.gradient(*v, 0.001);
+            let normal = sdf.gradient(*v, 0.01);
             normals.push(normal);
 
             let uv = Vec2::new(

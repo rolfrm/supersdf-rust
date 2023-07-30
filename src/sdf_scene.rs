@@ -117,13 +117,13 @@ impl SdfScene {
 
     pub fn iterate_scene(&mut self, p: Vec3, size: f32) {
         self.render_blocks.clear();
-        self.iterate_scene_rec(p, size)
+        self.iterate_scene_rec(p, size, true)
     }
 
     // The `iterate_scene_rec` function is a recursive function that works by dividing the scene into cells, and for each cell, it checks 
     // if it's close enough to the scene, or if it's too small or not, and if so, it skips the current cell. If the cell is relevant, it will
     // divide it into eight smaller cells and repeat the process.
-    fn iterate_scene_rec(&mut self, cell_position: Vec3, cell_size: f32) {
+    fn iterate_scene_rec(&mut self, cell_position: Vec3, cell_size: f32, update : bool) {
     
         let key = SdfKey {
             x: cell_position.x as i32,
@@ -131,16 +131,30 @@ impl SdfScene {
             z: cell_position.z as i32,
             w: cell_size as i32,
         };
+        let mut update2 = update;
+        let key_exists = self.map.contains_key(&key);
+        update2 = !key_exists;
         let (d, omodel) = 
-            if self.map.contains_key(&key){
+            if !update && key_exists {
                 let map = self.map[&key].clone();
                 (map.distance(cell_position), map)
             }else{
              // Calculate the SDF distance and check if optimizations can be made for the sdf in a local scope.
            //let (d, omodel) = (self.sdf.distance(cell_position), self.sdf.clone());
+            
              let r = self.sdf.distance_and_optimize(cell_position, cell_size, &mut self.cache);
-             self.map.insert(key, r.1.clone());
-             println!("updated map at: {:?}", key);
+             if update && key_exists {
+                let current_map = self.map.get(&key).unwrap();
+                if false == current_map.eq(&r.1) {
+                    update2 = true;
+                    self.map.insert(key, r.1.clone());
+                    println!("updated map at: {:?}", key);
+                }
+
+             }else{
+                self.map.insert(key, r.1.clone());
+                println!("updated map at: {:?}", key);
+             }
              r
             };
         if d > cell_size * SQRT3 {
@@ -189,7 +203,7 @@ impl SdfScene {
                 o[(i >> 2) & 1] as f32,
             );
             let p = offset + cell_position;
-            self.iterate_scene_rec(p, s2);
+            self.iterate_scene_rec(p, s2, update2);
         }
     }
 }
