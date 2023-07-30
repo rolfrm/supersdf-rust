@@ -1,14 +1,14 @@
-use kiss3d::nalgebra::Vector2;
 use std::cmp::Ordering;
-type Vec2f = Vector2<f32>;
+
+use crate::vec2::Vec2;
 
 pub struct Line {
-    from: Vec2f,
-    to: Vec2f,
+    from: Vec2,
+    to: Vec2,
 }
 
 impl Line {
-    pub fn new(from: Vec2f, to: Vec2f) -> Line {
+    pub fn new(from: Vec2, to: Vec2) -> Line {
         Line { from, to }
     }
     pub fn into_iter(&self) -> LineIterator {
@@ -16,7 +16,7 @@ impl Line {
             from: self.from,
             to: self.to,
             d: (self.to - self.from).abs(),
-            s: Vec2f::new(
+            s: Vec2::new(
                 match self.to.x > self.from.x {
                     true => 1.0,
                     false => -1.0,
@@ -42,19 +42,19 @@ impl Line {
 
 #[derive(Debug, Copy, Clone)]
 pub struct LineIterator {
-    from: Vec2f,
-    to: Vec2f,
-    d: Vec2f,
-    s: Vec2f,
+    from: Vec2,
+    to: Vec2,
+    d: Vec2,
+    s: Vec2,
     err: f32,
 }
 
 impl Iterator for LineIterator {
-    type Item = Vec2f;
+    type Item = Vec2;
 
     fn next(&mut self) -> Option<Self::Item> {
         let start = self.from;
-        if (self.from - self.to).dot(&self.d) >= 0.0 {
+        if (self.from - self.to).dot(self.d) >= 0.0 {
             return None;
         }
 
@@ -79,7 +79,7 @@ pub struct LineYIterator {
 }
 
 impl Iterator for LineYIterator {
-    type Item = Vec2f;
+    type Item = Vec2;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(v0) = self.last_y {
@@ -152,9 +152,9 @@ impl Iterator for F32Range {
 
 #[derive(Debug, Copy, Clone)]
 pub struct Triangle {
-    a: Vec2f,
-    b: Vec2f,
-    c: Vec2f,
+    a: Vec2,
+    b: Vec2,
+    c: Vec2,
 }
 
 fn f32_cmp(a: f32, b: f32) -> Ordering {
@@ -167,7 +167,7 @@ fn f32_cmp(a: f32, b: f32) -> Ordering {
 }
 
 impl Triangle {
-    pub fn new(a: Vec2f, b: Vec2f, c: Vec2f) -> Triangle {
+    pub fn new(a: Vec2, b: Vec2, c: Vec2) -> Triangle {
         let mut args = [a, b, c];
         args.sort_by(|v1, v2| f32_cmp(v1.y, v2.y));
         args.reverse();
@@ -188,7 +188,7 @@ impl Triangle {
     }
 }
 
-pub fn iter_triangle<F: FnMut(Vec2f)>(trig: &Triangle, mut f: F) {
+pub fn iter_triangle<F: FnMut(Vec2)>(trig: &Triangle, mut f: F) {
     let a = trig.a;
     let b = trig.b;
     let c = trig.c;
@@ -212,7 +212,7 @@ pub fn iter_triangle<F: FnMut(Vec2f)>(trig: &Triangle, mut f: F) {
             let x2 = a.x + dx2 * (yi - a.y);
 
             for xi in F32Range::new(x1.floor(), x2.ceil(), None) {
-                f(Vec2f::new(xi, yi));
+                f(Vec2::new(xi, yi));
             }
         }
     }
@@ -223,7 +223,7 @@ pub fn iter_triangle<F: FnMut(Vec2f)>(trig: &Triangle, mut f: F) {
             let x1 = a.x + dx1 * (yi - a.y);
             let x2 = b.x + dx3 * (yi - b.y);
             for xi in F32Range::new(x1.floor(), x2.ceil(), None) {
-                f(Vec2f::new(xi, yi));
+                f(Vec2::new(xi, yi));
             }
         }
     }
@@ -238,7 +238,7 @@ pub struct TriangleIterator {
 }
 
 impl Iterator for TriangleIterator {
-    type Item = Vec2f;
+    type Item = Vec2;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(ref mut scanner) = self.scanner {

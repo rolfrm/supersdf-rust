@@ -103,10 +103,10 @@ impl State for AppState {
                 let pos = block.0;
                 
                 let mut r = VertexesList::new();
-                let newsdf = sdf2.optimized_for_block(block.0.into(), size).cached(&mut self.sdf_cache);
+                let newsdf = sdf2.optimized_for_block(block.0.into(), size,&mut self.sdf_cache).cached(&mut self.sdf_cache);
                 
                 //println!("new block: {}", newsdf);
-                marching_cubes_sdf(&mut r, &newsdf, block.0.into(), size, 0.2 * 2.0_f32.powf(block.4));
+                marching_cubes_sdf(&mut r, &newsdf, block.0.into(), size, 0.4 * 2.0_f32.powf(block.4));
                 
                 if r.any() {
                     if false {
@@ -138,7 +138,8 @@ impl State for AppState {
                 }
             });
             
-            if(!nd.1.eq(&block.3)){ 
+            if(!nd.1.ref_eq(&block.3)){ 
+                println!("Reload!");
                 // node changed since last time.
                 nd.0.unlink();
                 self.nodes.remove(&block.2);

@@ -1,6 +1,6 @@
-use crate::{mc, sdf, triangle_raster, vec3::{Vec3, IntoVector3Array}};
+use crate::{mc, sdf, triangle_raster, vec3::{Vec3, IntoVector3Array}, vec2::{Vec2, IntoVector2Array}};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use kiss3d::resource::Mesh;
 use mc::*;
@@ -10,11 +10,8 @@ use triangle_raster::*;
 use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
 use kiss3d::nalgebra::{Const, OPoint, Point2, Point3, Vector2, Vector3};
 
-type Vec3f = Vec3;
-type Vec2 = Vector2<f32>;
-
 pub struct VertexesList {
-    verts: Vec<Vec3f>,
+    verts: Vec<Vec3>,
 }
 
 impl VertexesList {
@@ -108,7 +105,7 @@ impl VertexesList {
     pub fn to_mesh(&self, sdf: &DistanceFieldEnum) -> (Mesh, DynamicImage) {
         let mut coords: Vec<Point3<f32>> = Vec::new();
         let mut faces = Vec::new();
-        let mut uvs = Vec::new();
+        let mut uvs : Vec<Vec2> = Vec::new();
         let mut face: OPoint<u16, Const<3>> = Point3::new(0, 0, 0);
         let mut normals = Vec::new();
         let mut faceit = 0;
@@ -124,15 +121,10 @@ impl VertexesList {
         let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(128, 128);
         let pxmargin = 3;
         let uvmargin = (1.0 + rows as f64) * (pxmargin as f64) / (buf.width() as f64);
-        let bufsize: kiss3d::nalgebra::Matrix<
-            f32,
-            Const<2>,
-            Const<1>,
-            kiss3d::nalgebra::ArrayStorage<f32, 2, 1>,
-        > = Vec2::new(buf.width() as f32, buf.height() as f32);
+        let bufsize = Vec2::new(buf.width() as f32, buf.height() as f32);
         let mut dict: HashMap<Vector3<i32>, i32> = HashMap::new();
-        let mut max = Vec3f::new(-100000.0, -100000.0, -100000.0);
-        let mut min = Vec3f::new(-100000.0, -100000.0, -100000.0);
+        let mut max = Vec3::new(-100000.0, -100000.0, -100000.0);
+        let mut min = Vec3::new(-100000.0, -100000.0, -100000.0);
 
         for v in &self.verts {
             min = min.min(*v);
@@ -145,7 +137,8 @@ impl VertexesList {
         }
         let mid = (max + min) * 0.5;
         let size = (max - min).length() * 0.5;
-        let sdf = sdf.optimized_for_block(mid, size);
+        let sdf = sdf.optimized_for_block(mid, size, &mut HashSet::new());
+
 
         for v in &self.verts {
             let facei: i64 = faces.len() as i64;
@@ -156,7 +149,7 @@ impl VertexesList {
             let normal = sdf.gradient(*v, 0.001);
             normals.push(normal);
 
-            let uv = Point2::new(
+            let uv = Vec2::new(
                 (colf
                     + fw * (match faceit == 1 {
                         false => uvmargin,
@@ -183,9 +176,9 @@ impl VertexesList {
                 let vc : Vec3 = coords[coords.len() - 1].to_homogeneous().xyz().into();
 
                 // now trace the colors into the texture for this triangle.
-                let uva: Vec2 = uvs[uvs.len() - 3].to_homogeneous().xy();
-                let uvb = uvs[uvs.len() - 2].to_homogeneous().xy();
-                let uvc = uvs[uvs.len() - 1].to_homogeneous().xy();
+                let uva: Vec2 = uvs[uvs.len() - 3];
+                let uvb = uvs[uvs.len() - 2];
+                let uvc = uvs[uvs.len() - 1];
 
                 // uv in pixel coordinate with a 1px margin.
                 let pa = uva * bufsize.x;
@@ -200,7 +193,7 @@ impl VertexesList {
                 let max2 = va.max(vb).max(vc);
                 let mid2 = (max2 + min2) * 0.5;
                 let size2 = (max2 - min2).length() * 0.5;
-                let sdf2 = sdf.optimized_for_block(mid2, size2);
+                let sdf2 = sdf.optimized_for_block(mid2, size2, &mut HashSet::new());
                 
                 iter_triangle(&trig, |pixel| {
                     let x = pixel.x as u32;
@@ -223,7 +216,7 @@ impl VertexesList {
                 coords,
                 faces,
                 Option::Some(IntoVector3Array(normals)),
-                Option::Some(uvs),
+                Option::Some(IntoVector2Array(uvs)),
                 false,
             ),
             image,
@@ -236,7 +229,7 @@ static SQRT_3: f32 = 1.7320508;
 pub fn marching_cubes_sdf<T1: DistanceField, T: MarchingCubesReciever>(
     recv: &mut T,
     model: &T1,
-    position: Vec3f,
+    position: Vec3,
     size: f32,
     res: f32,
 ) {
@@ -251,7 +244,7 @@ pub fn marching_cubes_sdf<T1: DistanceField, T: MarchingCubesReciever>(
             let s2 = size * 0.5;
             let o = [-s2, s2];
             for i in 0..8 {
-                let offset = Vec3f::new(o[i & 1], o[(i >> 1) & 1], o[(i >> 2) & 1]);
+                let offset = Vec3::new(o[i & 1], o[(i >> 1) & 1], o[(i >> 2) & 1]);
                 let p = offset + position;
                 marching_cubes_sdf(recv, model, p, s2, res);
             }

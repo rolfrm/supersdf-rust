@@ -1,3 +1,5 @@
+use std::collections::{HashSet, HashMap};
+
 use crate::{sdf, vec3::Vec3};
 use sdf::*;
 
@@ -79,7 +81,9 @@ pub struct SdfScene {
     pub eye_pos: Vec3f,
     pub block_size: f32,
     pub render_blocks: Vec<(Vec3f, f32, SdfKey, DistanceFieldEnum, f32)>,
-    pub cam: Matrix4<f32>
+    pub cam: Matrix4<f32>,
+    cache: HashSet<DistanceFieldEnum>,
+    map : HashMap<SdfKey, DistanceFieldEnum>
 }
 
 const SQRT3: f32 = 1.73205080757;
@@ -87,9 +91,11 @@ impl SdfScene {
 
     pub fn new(sdf : DistanceFieldEnum) -> SdfScene {
         SdfScene { sdf: sdf, eye_pos: Vec3::zeros(), 
-            block_size: 1.0, 
+            block_size: 2.0, 
             render_blocks: Vec::new(),
-            cam : Matrix4::identity()
+            cam : FirstPerson::new(Point3::new(0.0, 0.0, -5.0), Point3::new(0.0, 0.0, 0.0)).transformation(),
+            cache: HashSet::new(),
+            map: HashMap::new()
          }
     } 
 
@@ -119,9 +125,24 @@ impl SdfScene {
     // divide it into eight smaller cells and repeat the process.
     fn iterate_scene_rec(&mut self, cell_position: Vec3, cell_size: f32) {
     
-        // Calculate the SDF distance and check if optimizations can be made for the sdf in a local scope.
-        //let (d, omodel) = (self.sdf.distance(cell_position), self.sdf.clone());
-        let (d, omodel) = self.sdf.distance_and_optimize(cell_position, cell_size);
+        let key = SdfKey {
+            x: cell_position.x as i32,
+            y: cell_position.y as i32,
+            z: cell_position.z as i32,
+            w: cell_size as i32,
+        };
+        let (d, omodel) = 
+            if self.map.contains_key(&key){
+                let map = self.map[&key].clone();
+                (map.distance(cell_position), map)
+            }else{
+             // Calculate the SDF distance and check if optimizations can be made for the sdf in a local scope.
+           //let (d, omodel) = (self.sdf.distance(cell_position), self.sdf.clone());
+             let r = self.sdf.distance_and_optimize(cell_position, cell_size, &mut self.cache);
+             self.map.insert(key, r.1.clone());
+             println!("updated map at: {:?}", key);
+             r
+            };
         if d > cell_size * SQRT3 {
             return;
         }
@@ -150,12 +171,7 @@ impl SdfScene {
 
         // if the size of the current cell is less than the lod cell size
         if cell_size <= lod_cell_size {
-            let key = SdfKey {
-                x: cell_position.x as i32,
-                y: cell_position.y as i32,
-                z: cell_position.z as i32,
-                w: cell_size as i32,
-            };
+            
 
             self.callback(key, cell_position, cell_size, &omodel, cell_size, lod_level);
             
@@ -181,29 +197,25 @@ impl SdfScene {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::identity;
 
     use super::*;
-
 
     #[test]
     fn test_optimize_bounds() {
         let sdf = build_test();
         let sdf2 = sdf.optimize_bounds();
     
-        let mut sdf_iterator = SdfScene {
-            sdf: sdf2,
-            eye_pos: Vec3::zeros(),
-            block_size: 2.0,
-            render_blocks: Vec::new(),
-            cam: Matrix4::identity()
-        };
+        let mut sdf_iterator = SdfScene::new(sdf2);
+        
 
-        sdf_iterator.iterate_scene(Vec3::new(0.0, 0.0, 0.0), 64.0);
+        sdf_iterator.iterate_scene(Vec3::new(0.0, 0.0, 0.0), 2.0 * 512.0);
+        println!("Count: {}", sdf_iterator.render_blocks.len());
         for block in sdf_iterator.render_blocks {
-            println!("{:?}", block.2);
+            //println!("{:?}", block.2);
             
         }
+        
+        
     }
 
 
