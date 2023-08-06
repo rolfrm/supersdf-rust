@@ -137,7 +137,10 @@ impl VertexesList {
         }
         let mid = (max + min) * 0.5;
         let size = (max - min).length() * 0.5;
-        let sdf = sdf.optimized_for_block(mid, size, &mut HashSet::new());
+
+        let mut cache = HashSet::new();
+
+        let sdf = sdf.optimized_for_block(mid, size, &mut cache);
 
 
         for v in &self.verts {
@@ -193,12 +196,12 @@ impl VertexesList {
                 let max2 = va.max(vb).max(vc);
                 let mid2 = (max2 + min2) * 0.5;
                 let size2 = (max2 - min2).length() * 0.5;
-                let sdf2 = sdf.optimized_for_block(mid2, size2, &mut HashSet::new());
+                let sdf2 = sdf.optimized_for_block(mid2, size2, &mut cache);
                 
                 iter_triangle(&trig, |pixel| {
                     let x = pixel.x as u32;
                     let y = pixel.y as u32;
-                    let px2 = Vec2::new(x as f32, y as f32) + Vec2::new(0.5, 0.5);
+                    let px2 = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
                     let v0 = interpolate_vec2(pa, pb, pc, va, vb, vc, px2);
 
                     if x < buf.width() && y < buf.height() {

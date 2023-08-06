@@ -27,7 +27,7 @@ fn is_in_frustum(cam: &Matrix4<f32>, pos : Vec3, size : f32) -> bool{
        let z = (i >> 2) & 1;
        let v = pos + Vec3::new(x as f32 - 0.5,y as f32 - 0.5,z as f32 - 0.5) * size;
        let v2 : Point3<f32> = v.into();
-       let v3 = (cam * v2.to_homogeneous());
+       let v3 = cam * v2.to_homogeneous();
        let v4 = Point3::from_homogeneous(v3);
        if let None = v4 {
         println!("Issue: {:?}", v3);

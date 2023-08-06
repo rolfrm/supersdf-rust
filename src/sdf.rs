@@ -3,7 +3,7 @@ use image::{Rgba};
 use noise::{NoiseFn, Perlin};
 use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::fmt::Display;
 use std::{fmt, io};
 use std::hash::Hash;
@@ -107,7 +107,6 @@ pub enum DistanceFieldEnum {
     Primitive(Primitive),
     Coloring(Coloring, Rc<DistanceFieldEnum>),
     Add(Add),
-    BoundsAdd(Add, Sphere),
     Subtract(Subtract),
     Empty
 }
@@ -123,8 +122,6 @@ pub struct Sphere {
     center: Vec3,
     radius: f32
 }
-
-
 
 impl Sphere {
     pub fn new(center: Vec3, radius: f32) -> Sphere {
@@ -290,7 +287,9 @@ impl Noise {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Add {
     left: Rc<DistanceFieldEnum>,
-    right: Rc<DistanceFieldEnum>
+    right: Rc<DistanceFieldEnum>,
+    size : u32,
+    bounds: Sphere
 }
 fn rgba_interp(a: Rgba<u8>, b: Rgba<u8>, v: f32) -> Rgba<u8> {
     Rgba([
@@ -302,13 +301,29 @@ fn rgba_interp(a: Rgba<u8>, b: Rgba<u8>, v: f32) -> Rgba<u8> {
 }
 impl Add {
     fn new(left: DistanceFieldEnum, right: DistanceFieldEnum) -> Add {
+        Add::from_rc(Rc::new(left), Rc::new(right))
+    }
+
+    fn from_rc(left: Rc<DistanceFieldEnum> , right: Rc<DistanceFieldEnum>) -> Add {
+        let size = left.size() + right.size() + 1;
+
+        let s1 = right.calculate_sphere_bounds();
+        let s2 = left.calculate_sphere_bounds();
+        
         Add {
-            left: Rc::new(left),
-            right: Rc::new(right),
+            left: left,
+            right: right,
+            size: size,
+            bounds: Sphere::two_sphere_bounds(&s1, &s2)
         }
     }
 
     fn distance(&self, pos: Vec3) -> f32 {
+        let d1 = self.bounds.distance(pos);
+        if d1 > self.bounds.radius {
+            return d1;
+        }
+
         f32::min(self.left.distance(pos), self.right.distance(pos))
     }
 
@@ -341,14 +356,7 @@ impl DistanceField for DistanceFieldEnum {
             DistanceFieldEnum::Subtract(sub) => sub.distance(pos),
             DistanceFieldEnum::Primitive(primitive) => primitive.distance(pos),
             DistanceFieldEnum::Empty => f32::INFINITY,
-            DistanceFieldEnum::Coloring(color, inner) => inner.distance(pos),
-            DistanceFieldEnum::BoundsAdd(add, bounds) => {
-                let d1 = bounds.distance(pos);
-                if d1 > bounds.radius * SQRT3{
-                    return d1;
-                }
-                return add.distance(pos);
-            }
+            DistanceFieldEnum::Coloring(color, inner) => inner.distance(pos)
         }
     }
 }
@@ -457,23 +465,6 @@ impl DistanceFieldEnum {
                 return DistanceFieldEnum::Subtract( Subtract {left : Rc::new(left2),
                     subtract: Rc::new(optsub), k: sub.k}).into()
                
-            }
-
-            DistanceFieldEnum::BoundsAdd(add, bounds) => {
-                let bounds_d = bounds.distance(block_center);
-                if bounds_d < size * SQRT3 {
-                    let r = DistanceFieldEnum::optimize_add(add, block_center, size, cache);
-                    match r {
-                        DistanceFieldEnum::Add(add) =>
-                            DistanceFieldEnum::BoundsAdd(add, bounds.clone()),
-                        _ =>
-                        r
-
-                    }
-                    
-                }else{
-                    self.clone()
-                }
             },
             DistanceFieldEnum::Coloring(c, i) => {
                 let opt = i.optimized_for_block( block_center, size, cache);
@@ -501,9 +492,9 @@ impl DistanceFieldEnum {
             _ => Add::new(self.clone(), sdf).into(),
         }
     }
-    pub fn insert_2<T: Into<DistanceFieldEnum>>(&self, sdf: T) -> DistanceFieldEnum {
-        let esdf : DistanceFieldEnum = sdf.into();
-        let esdfs = esdf.calculate_sphere_bounds();
+
+    pub fn insert_3<T: Into<DistanceFieldEnum>>(&self, sdf: T, bounds: &Sphere) -> DistanceFieldEnum {
+        
         match self {
             DistanceFieldEnum::Add(add) => {
                 let l0 = add.left.calculate_sphere_bounds().center;
@@ -515,22 +506,27 @@ impl DistanceFieldEnum {
                 
                 let bias = s1 as f32 / (s2 + s1) as f32;
 
-                let d1 = add.left.distance(esdfs.center) * bias;
-                let d2 = add.right.distance(esdfs.center) * (1.0 - bias);
+                let d1 = add.left.distance(bounds.center) * bias;
+                let d2 = add.right.distance(bounds.center) * (1.0 - bias);
                 
-                println!("Into add! {} {} {}", d1, d2, l3);
+                //println!("Into add! {} {} {}", d1, d2, l3);
                 
                 if d1 < d2 && d1 < l3 * 0.9 {
-                    return Add{ left : Rc::new(add.left.insert_2(esdf.clone())), right: add.right.clone()}.into();
+                    return Add::from_rc(Rc::new(add.left.insert_3(sdf, bounds)),add.right.clone()).into();
                 }else if d2 < d1 && d2 < l3* 0.9 {
-                    return Add{ right : Rc::new(add.right.insert_2(esdf)), left: add.left.clone()}.into();
+                    return Add::from_rc( add.left.clone(), Rc::new(add.right.insert_3(sdf, bounds))).into();
                 }
-                return self.insert(esdf.clone());
+                return self.insert(sdf.into());
             },
-            DistanceFieldEnum::Coloring(c, other) => DistanceFieldEnum::Coloring(c.clone(), Rc::new(other.insert_2(esdf))),
-            _ => self.insert(esdf)
+            DistanceFieldEnum::Coloring(c, other) => DistanceFieldEnum::Coloring(c.clone(), Rc::new(other.insert_2(sdf))),
+            _ => self.insert(sdf.into())
         }
+    }
 
+    pub fn insert_2<T: Into<DistanceFieldEnum>>(&self, sdf: T) -> DistanceFieldEnum {
+        let sdf2 : DistanceFieldEnum = sdf.into().clone();
+        let sphere = sdf2.calculate_sphere_bounds();
+        return self.insert_3(sdf2, &sphere);
     }
 
     pub fn calculate_sphere_bounds(&self) -> Sphere {
@@ -541,35 +537,44 @@ impl DistanceFieldEnum {
                     Primitive::Aabb(aabb) => Sphere::new(aabb.center, aabb.radius.length()),
                 }
             },
-            DistanceFieldEnum::BoundsAdd(_, sphere) => sphere.clone(),
             DistanceFieldEnum::Empty => Sphere::new(Vec3::zeros(), f32::INFINITY),
             DistanceFieldEnum::Coloring(_,inner) => inner.calculate_sphere_bounds(),
+            DistanceFieldEnum::Add(add) => add.bounds.clone(),
+            DistanceFieldEnum::Subtract(sub) => sub.left.calculate_sphere_bounds()
+        }
+    }
+
+    pub fn calculate_sphere_bounds2(&self, cache: &mut HashMap<DistanceFieldEnum, Sphere>) -> Sphere {
+        if let Some(x) = cache.get(self) {
+            return x.clone();
+        }
+        let r = 
+        match self {
+            DistanceFieldEnum::Primitive(p) =>{
+                match p {
+                    Primitive::Sphere(s) => s.clone(),
+                    Primitive::Aabb(aabb) => Sphere::new(aabb.center, aabb.radius.length()),
+                }
+            },
+            DistanceFieldEnum::Empty => Sphere::new(Vec3::zeros(), f32::INFINITY),
+            DistanceFieldEnum::Coloring(_,inner) => inner.calculate_sphere_bounds2(cache),
             DistanceFieldEnum::Add(add) => {
-                let left = add.left.calculate_sphere_bounds();
-                let right = add.right.calculate_sphere_bounds();
+                let left = add.left.calculate_sphere_bounds2(cache);
+                let right = add.right.calculate_sphere_bounds2(cache);
 
                 Sphere::two_sphere_bounds(&left, &right)
             },
-            DistanceFieldEnum::Subtract(sub) => sub.left.calculate_sphere_bounds()
-        }
+            DistanceFieldEnum::Subtract(sub) => sub.left.calculate_sphere_bounds2(cache)
+        };
+        cache.insert(self.clone(), r.clone());
+        r
     }
 
     pub fn optimize_bounds(&self) -> DistanceFieldEnum {
         match self {
             DistanceFieldEnum::Add(add) => {
-                let left = add.left.optimize_bounds();
-                let right = add.right.optimize_bounds();
-                let leftbounds = left.calculate_sphere_bounds();
-                let rightbounds = right.calculate_sphere_bounds();
-                let bounds = Sphere::two_sphere_bounds(&leftbounds, &rightbounds);
-
-                let same = add.left.as_ref().eq(&left) && add.right.as_ref().eq(&right);
-                let new_add = match same {
-                    true => add.clone(),
-                    false => Add::new(left, right),
-                };
-                return DistanceFieldEnum::BoundsAdd(new_add, bounds.clone());
-            }
+                add.clone().into()
+            },
             DistanceFieldEnum::Subtract(sub) => {
                 let left2 = sub.left.optimize_bounds();
                 let subbounds = sub.subtract.calculate_sphere_bounds();
@@ -597,28 +602,6 @@ impl DistanceFieldEnum {
                         }
                         
                     },
-                    DistanceFieldEnum::BoundsAdd(inner_add, sphere ) => {
-                        let left_bounds = inner_add.left.calculate_sphere_bounds();
-                        let right_bounds = inner_add.right.calculate_sphere_bounds();
-                        if !left_bounds.overlaps(&subbounds) {
-                            if !right_bounds.overlaps(&subbounds) {
-                                println!("none overlaps! {:?} {:?} {:?} {}", left_bounds, right_bounds, subbounds, (right_bounds.center - subbounds.center).length());
-                                // neither bounds overlaps the subtraction -> just delete it.
-                                DistanceFieldEnum::Add(inner_add.clone())
-                            }else {
-                                // left does not overlap -> move the subtraction into the right
-                                Add::new(inner_add.left.as_ref().clone(), Subtract::new(inner_add.right.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into())
-                                 .into()
-                            }
-                        }else if !right_bounds.overlaps(&subbounds) {
-                            // only right overlaps -> move it into the right.
-                            Add::new(Subtract::new(inner_add.left.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into(),
-                               inner_add.right.as_ref().clone()).into()
-                        }else{
-                            left2
-                        }
-                    },
-
                     _=> self.clone()
                 };
 
@@ -641,7 +624,6 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Add(add) => add.color(pos),
             DistanceFieldEnum::Primitive(_) => Rgba([255,0,0,255]),
             DistanceFieldEnum::Empty => Rgba([0, 0, 0, 0]),
-            DistanceFieldEnum::BoundsAdd(add, _) => add.color(pos),
             DistanceFieldEnum::Coloring(c, inner) => c.color(pos),
             DistanceFieldEnum::Subtract(sub) => sub.left.color(pos)
         }
@@ -689,13 +671,6 @@ impl DistanceFieldEnum {
                 }
                 false
             },
-            DistanceFieldEnum::BoundsAdd(a, _) => {
-                if let DistanceFieldEnum::BoundsAdd(b, _) = other {
-                    return Rc::<DistanceFieldEnum>::ptr_eq(&a.left, &b.left)
-                    &&Rc::<DistanceFieldEnum>::ptr_eq(&a.right, &b.right);
-                }
-                false
-            },
             DistanceFieldEnum::Coloring(a, i) => {
                 if let DistanceFieldEnum::Coloring(b, i2) = other {
                     return Rc::<DistanceFieldEnum>::ptr_eq(&i,&i2) && b.eq(&b);
@@ -730,11 +705,6 @@ impl DistanceFieldEnum {
                     add.left.build_map(m);
                     add.right.build_map(m);
                 },
-                DistanceFieldEnum::BoundsAdd(add, _) => {
-                    add.left.build_map(m);
-                    add.right.build_map(m);
-            
-                },
                 DistanceFieldEnum::Subtract(sub) => {
                     sub.left.build_map(m);
                     sub.subtract.build_map(m);
@@ -753,11 +723,6 @@ impl DistanceFieldEnum {
                     add.left.build_map(m);
                     add.right.build_map(m);
                 },
-                DistanceFieldEnum::BoundsAdd(add, _) => {
-                    add.left.build_map(m);
-                    add.right.build_map(m);
-            
-                },
                 DistanceFieldEnum::Subtract(sub) => {
                     sub.left.build_map(m);
                     sub.subtract.build_map(m);
@@ -772,13 +737,7 @@ impl DistanceFieldEnum {
         match self {
             DistanceFieldEnum::Primitive(_) => 1,
             DistanceFieldEnum::Coloring(_, inner) => inner.size(),
-            DistanceFieldEnum::Add(add) => {
-                add.left.size() + add.right.size()
-            },
-            DistanceFieldEnum::BoundsAdd(add, _) => {
-                add.left.size() + add.right.size()
-        
-            },
+            DistanceFieldEnum::Add(add) => add.size,
             DistanceFieldEnum::Subtract(sub) => {
                 sub.left.size() + sub.subtract.size()
             },
@@ -790,7 +749,6 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Primitive(_) => None,
             DistanceFieldEnum::Coloring(_, inner) => inner.first_add(),
             DistanceFieldEnum::Add(add) => Some(add.clone()),
-            DistanceFieldEnum::BoundsAdd(add, _) => Some(add.clone()),
             DistanceFieldEnum::Subtract(sub) => sub.left.first_add(),
             DistanceFieldEnum::Empty => None,
         }
@@ -808,10 +766,6 @@ impl DistanceFieldEnum {
             
                 f.write_str("add\n").and(add.left.as_ref().print_graph_rec(n + 1, f))
                     .and(add.right.as_ref().print_graph_rec(n + 1, f))
-                ,
-            DistanceFieldEnum::BoundsAdd(add, _) => 
-                f.write_str("bounds").and(add.left.as_ref().print_graph_rec(n + 1, f))
-                .and(add.right.as_ref().print_graph_rec(n + 1, f))
                 ,
             DistanceFieldEnum::Subtract(sub) => 
             {
@@ -939,15 +893,19 @@ pub fn build_test3() -> DistanceFieldEnum {
 
 pub fn build_big(n : i32) -> DistanceFieldEnum {
     let mut sdf  = DistanceFieldEnum::Empty;
-    let mut rng: rand::rngs::ThreadRng = thread_rng();
+    //let mut rng: rand::rngs::ThreadRng = thread_rng();
+    //let mut bounds_cache = HashMap::new();
     
     for x in 0..n{
         for y in 0..n {
             for z in 0..n {
-                println!("{} {} {}", x, y, z);
+                //println!("{} {} {}", x, y, z);
                 let sphere = Sphere::new(Vec3::new(x as f32* 10.0, y as f32* 10.0, z as f32 * 10.0), 3.0);
-                sdf = sdf.insert_2(sphere);
+                let sphere2 = sphere.clone();
+                //sdf = sdf.insert_4(sphere, &sphere2, &mut bounds_cache);
+                sdf = sdf.insert_3(sphere, &sphere2);
             }
+            sdf = sdf.optimize_bounds();
         }
     }
     sdf = DistanceFieldEnum::Coloring(Coloring::SolidColor(Rgba([0,255,255,255])), Rc::new(sdf));
@@ -969,7 +927,6 @@ impl fmt::Display for DistanceFieldEnum{
                 }
             },
             DistanceFieldEnum::Add(add) => write!(f, "({}\n {}\n)", add.left, add.right),
-            DistanceFieldEnum::BoundsAdd(a, b) => {write!(f, "(bounds-add {} {} {} {})", a.left, a.right, b.center, b.radius)},
             DistanceFieldEnum::Coloring(c, inner) => {
                 match c {
                     Coloring::SolidColor(c) => write!(f, "(color: [{} {} {} {}] {})", c[0], c[1], c[2], c[3], inner),
@@ -1172,11 +1129,13 @@ mod tests {
 
     #[test]
     fn test_super_gradient(){
-        let sdf = build_big(15);
+        let sdf = build_big(40);
 
         let g = sdf.gradient(Vec3::new(-1.0, 0.0, 0.0), 0.1);
         println!("g: {}", g);
     }
+
+
 
 
 }
