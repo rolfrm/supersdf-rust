@@ -131,9 +131,9 @@ impl SdfScene {
             z: cell_position.z as i32,
             w: cell_size as i32,
         };
-        let mut update2 = update;
+        
         let key_exists = self.map.contains_key(&key);
-        update2 = !key_exists;
+        let mut update2 = !key_exists;
         let (d, omodel) = 
             if !update && key_exists {
                 let map = self.map[&key].clone();

@@ -3,10 +3,12 @@ use image::{Rgba};
 use noise::{NoiseFn, Perlin};
 use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, HashMap};
+use std::env::JoinPathsError;
 use std::fmt::Display;
 use std::{fmt, io};
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 //, Simplex, SuperSimplex};
 use std::rc::Rc;
 
@@ -33,7 +35,7 @@ const BIGPRIME : i64 = 1844674407370955155;
 
     impl Hash2 for f32 {
         fn hash2(&self) -> i32 {
-            f32::to_bits(*self) as i32
+            (f32::to_bits(*self) as i64).wrapping_mul(BIGPRIME) as i32
         }
     }
 
@@ -102,7 +104,7 @@ impl Coloring {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum DistanceFieldEnum {
     Primitive(Primitive),
     Coloring(Coloring, Rc<DistanceFieldEnum>),
@@ -289,7 +291,8 @@ pub struct Add {
     left: Rc<DistanceFieldEnum>,
     right: Rc<DistanceFieldEnum>,
     size : u32,
-    bounds: Sphere
+    bounds: Sphere,
+    hash: u64
 }
 fn rgba_interp(a: Rgba<u8>, b: Rgba<u8>, v: f32) -> Rgba<u8> {
     Rgba([
@@ -309,12 +312,18 @@ impl Add {
 
         let s1 = right.calculate_sphere_bounds();
         let s2 = left.calculate_sphere_bounds();
-        
+        let mut hasher = DefaultHasher::new();
+        let num = 32143232;
+        num.hash(&mut hasher);
+        left.hash(&mut hasher);
+        right.hash(&mut hasher);
+        let hash = hasher.finish();
         Add {
             left: left,
             right: right,
             size: size,
-            bounds: Sphere::two_sphere_bounds(&s1, &s2)
+            bounds: Sphere::two_sphere_bounds(&s1, &s2),
+            hash: hash
         }
     }
 
@@ -356,7 +365,7 @@ impl DistanceField for DistanceFieldEnum {
             DistanceFieldEnum::Subtract(sub) => sub.distance(pos),
             DistanceFieldEnum::Primitive(primitive) => primitive.distance(pos),
             DistanceFieldEnum::Empty => f32::INFINITY,
-            DistanceFieldEnum::Coloring(color, inner) => inner.distance(pos)
+            DistanceFieldEnum::Coloring(_, inner) => inner.distance(pos)
         }
     }
 }
@@ -483,7 +492,7 @@ impl DistanceFieldEnum {
         let sdf2 =
             self.optimized_for_block(pos2 + Vec3::new(size * 0.5, size * 0.5, size * 0.5), size, cache);//.cached(cache);
         
-        return (self.distance(pos), sdf2);
+        return (sdf2.distance(pos), sdf2);
     }
 
     pub fn insert(&self, sdf: DistanceFieldEnum) -> DistanceFieldEnum {
@@ -784,7 +793,32 @@ impl DistanceFieldEnum {
 
 impl Hash for DistanceFieldEnum {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        core::mem::discriminant(self).hash(state);
+        match self {
+            DistanceFieldEnum::Add(add) => {
+                add.hash.hash(state);
+            },
+            DistanceFieldEnum::Primitive(p) => {
+                state.write_i32(p.hash());
+            }
+            DistanceFieldEnum::Coloring(c,i ) => {
+                state.write_i64(323543265);
+                state.write_i32(c.hash());
+                i.hash(state);
+            }
+            DistanceFieldEnum::Subtract(sub) => {
+              state.write_i64(33543265);
+              sub.left.hash(state);
+              sub.subtract.hash(state);
+              state.write_i32(sub.k.hash2());   
+            },
+            DistanceFieldEnum::Empty => {
+                321321532.hash(state);
+            }
+            _ => {
+                core::mem::discriminant(self).hash(state);
+            }
+        }
+        
     }
 }
 
@@ -795,6 +829,46 @@ struct SdfPrinter{
 impl Display for SdfPrinter{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.sdf.print_graph(f)
+    }
+}
+
+impl PartialEq for DistanceFieldEnum{
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            DistanceFieldEnum::Primitive(a) => {
+                if let DistanceFieldEnum::Primitive(b) = other {
+                    return a.eq(b);
+                }
+                return false;
+            },
+            DistanceFieldEnum::Coloring(a, ac) => {
+                if let DistanceFieldEnum::Coloring(b, bc) = other {
+                    return a.eq(b) && ac.eq(bc);
+                }
+                return false;
+            },
+            DistanceFieldEnum::Add(add) => {
+                if let DistanceFieldEnum::Add(add2) = other {
+                    return add2.hash == add.hash// && add.left.eq(&add2.left) && add.right.eq(&add2.right);
+                }
+                return false;
+            },
+            DistanceFieldEnum::Subtract(a) => {
+                if let DistanceFieldEnum::Subtract(b) = other {
+                    return a.eq(b);
+                }
+                return false;
+            },
+            DistanceFieldEnum::Empty => {
+                if let DistanceFieldEnum::Empty = other {
+                    return true;
+                }
+                return false;
+            },
+        }
+    }
+    fn ne(&self, other: &Self) -> bool {
+        !self.eq(other)
     }
 }
 
