@@ -4,7 +4,7 @@ use crate::{sdf, sdf_scene::{SdfScene, SdfKey}, sdf_mesh::{VertexesList, marchin
 use image::Rgba;
 use sdf::*;
 
-use kiss3d::{nalgebra::{Vector3, Point3, Point2, Vector2, Translation3}, resource::TextureManager, camera::{ArcBall, Camera, FirstPerson}, scene::SceneNode, window::{State, Window}, event::{MouseButton, WindowEvent, Action}};
+use kiss3d::{nalgebra::{Vector3, Point3, Point2, Vector2, Translation3}, resource::TextureManager, camera::{ArcBall, Camera, FirstPerson}, scene::SceneNode, window::{State, Window}, event::{MouseButton, WindowEvent, Action, Key}};
 
 type Vec2 = Vector2<f32>;
 
@@ -65,7 +65,7 @@ impl State for AppState {
                             .cast_ray(Vec3::new(at.x, at.y, at.z).into(), unp.1.into(), 1000.0);
 
                     if let Some((_, p)) = col {
-                        let newobj = Sphere::new(p, 2.0).color(Rgba([255, 0, 0, 255]));
+                        let newobj = Sphere::new(p, 2.0);//.color(Rgba([255, 0, 0, 255]));
                         
                         let sub = Subtract::new(self.sdf_iterator.sdf.clone(), newobj, 0.5);
                         self.sdf_iterator.sdf = sub.into();
@@ -77,6 +77,15 @@ impl State for AppState {
                 }
                 WindowEvent::CursorPos(x, y, _) => {
                     self.cursor_pos = Vec2::new(x as f32, y as f32);
+                }
+                WindowEvent::Key(key,action ,modifiers ) => {
+                    if key == Key::Return && action == Action::Press {
+                        println!("Reloading cache!");
+                        for node in self.nodes.iter_mut() {
+                            node.1.0.unlink()
+                        }
+                        self.nodes.clear();
+                    }
                 }
                 _ => {}
             }
@@ -92,7 +101,7 @@ impl State for AppState {
             let n = &mut node.1.0;    
             n.set_visible(false);    
         }
-        
+        let mut reload_count = 0;
         for block in &self.sdf_iterator.render_blocks {
             loop {
             let nd = self.nodes.entry(block.2).or_insert_with(|| {
@@ -106,22 +115,10 @@ impl State for AppState {
                 let newsdf = sdf2.optimized_for_block(block.0.into(), size,&mut self.sdf_cache)
                     .cached(&mut self.sdf_cache).clone();
                 
-                //println!("new block: {}", newsdf);
                 marching_cubes_sdf(&mut r, &newsdf, block.0.into(), size, 0.4 * 2.0_f32.powf(block.4));
                 
                 if r.any() {
-                    if false {
-                        println!("Cube: {} {}", size, pos);
-                
-                        let mut cube = win.add_cube(1.0, 1.0, 1.0);
                     
-                        cube.set_local_scale(size * 1.99, size * 1.99, size* 1.99);
-                    
-                        cube.set_local_translation(Translation3::new(pos.x as f32, pos.y as f32, pos.z as f32));
-                    
-                        return (cube, block.3.clone(), size, pos);
-                    }
-    
                     let meshtex = r.to_mesh(&newsdf);
 
                     let name = format!("{:?}", block.2).to_string();
@@ -139,11 +136,17 @@ impl State for AppState {
                 }
             });
             
-            if(!nd.1.ref_eq(&block.3)){ 
-                println!("Reload!");
+            if !nd.1.eq(&block.3){ 
+                reload_count += 1;
+                println!("Reload: {} ({} {} {} {})", reload_count, block.2.x, block.2.y, block.2.z, block.2.w);
                 // node changed since last time.
+                println!("Prev: {}", block.3);
+                println!("After: {}", nd.1);
                 nd.0.unlink();
-                self.nodes.remove(&block.2);
+                let key = block.2;
+                self.nodes.remove(&key);
+                
+                
             }else{
 
                 nd.0.set_visible(true);

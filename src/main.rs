@@ -15,7 +15,7 @@ use kiss3d::light::Light;
 use kiss3d::window::{Window};
 
 fn main() {
-    let sdf = build_big(20).optimize_bounds();
+    let sdf = build_test().optimize_bounds();
     println!("Final sdf: {:?}", sdf);
     let sdf_iterator = SdfScene::new(sdf);
 

@@ -314,6 +314,7 @@ impl Add {
         let s2 = left.calculate_sphere_bounds();
         let mut hasher = DefaultHasher::new();
         let num = 32143232;
+        
         num.hash(&mut hasher);
         left.hash(&mut hasher);
         right.hash(&mut hasher);
@@ -425,11 +426,12 @@ impl DistanceFieldEnum {
         }
     }
 
-    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>) -> DistanceFieldEnum {
-        
-        let left_opt = add.left.optimized_for_block(block_center, size, cache);
-        let right_opt = add.right.optimized_for_block(block_center, size, cache);
+    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>, min_d : f32) -> Rc<DistanceFieldEnum> {
+        let d2 = add.right.distance(block_center);
+        let left_opt = add.left.optimized_for_block2(block_center, size, cache, f32::min(d2, min_d));
         let left_d = left_opt.distance(block_center);
+        let right_opt = add.right.optimized_for_block2(block_center, size, cache, f32::min(left_d, min_d));
+        
         let right_d = right_opt.distance(block_center);
         if left_d > right_d + size * SQRT3 {
             return right_opt;
@@ -437,53 +439,65 @@ impl DistanceFieldEnum {
         if right_d > left_d + size * SQRT3{
             return left_opt;
         }
-        if left_opt.ref_eq(&add.left) && right_opt.ref_eq(&add.right) {
-            let add2 = add.clone();
-            return DistanceFieldEnum::Add(add2);
+        if f32::min(right_d, left_d) > min_d + size * SQRT3 * 2.0 {
+            return DistanceFieldEnum::Empty{}.into();
         }
-        return Add::new(left_opt, right_opt).into();
+        if f32::min(right_d, left_d) > size * SQRT3 * 2.0 * 1.5 {
+            if right_d < left_d {
+                return right_opt;
+            }
+            return left_opt;
+        }
+        if left_opt.eq(&add.left) && right_opt.eq(&add.right) {
+            let add2 = add.clone();
+            return Rc::new(DistanceFieldEnum::Add(add2).into());
+        }
+        return Rc::new(Add::from_rc(left_opt, right_opt).into());
     }
-
-    pub fn optimized_for_block(&self, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>) -> DistanceFieldEnum {
+    pub fn optimized_for_block(&self, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>) -> Rc<DistanceFieldEnum> {
+        return self.optimized_for_block2(block_center, size, cache, f32::INFINITY);
+    }
+    
+    pub fn optimized_for_block2(&self, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>, min_d :f32) -> Rc<DistanceFieldEnum> {
         match self {
             DistanceFieldEnum::Add(add) => {
-                DistanceFieldEnum::optimize_add(add, block_center,size, cache)
+                DistanceFieldEnum::optimize_add(add, block_center,size, cache, min_d)
             },
             DistanceFieldEnum::Subtract(sub) => {
-                let optsub = sub.subtract.optimized_for_block(block_center, size, cache);
-
+                let optsub = sub.subtract.optimized_for_block2(block_center, size, cache, min_d);
+                
                 let subtract_d = optsub.distance(block_center);
-                let left2 = sub.left.optimized_for_block(block_center, size, cache);
+                let left2 = sub.left.optimized_for_block2(block_center, size, cache, min_d);
                 if subtract_d > size * SQRT3 * 2.0{
                     if left2.eq(&sub.left) {
-                        return sub.left.as_ref().clone();
+                        return sub.left.clone();
                     }
                     return left2;
                 }
                
                 if left2.eq(&sub.left) && optsub.eq(&sub.subtract) {
-                    return DistanceFieldEnum::Subtract(sub.clone());
+                    return Rc::new(self.clone());
                 }else if left2.eq(&sub.left){
                     return DistanceFieldEnum::Subtract( Subtract {left : sub.left.clone(),
-                        subtract: Rc::new(optsub), k: sub.k}).into()
+                        subtract: optsub, k: sub.k}).into()
                 }else if optsub.eq(&sub.subtract){
-                    return DistanceFieldEnum::Subtract( Subtract {left : sub.left.clone(),
+                    return DistanceFieldEnum::Subtract( Subtract {left : left2,
                         subtract: sub.subtract.clone(), k: sub.k}).into()
                 }
                 
-                return DistanceFieldEnum::Subtract( Subtract {left : Rc::new(left2),
-                    subtract: Rc::new(optsub), k: sub.k}).into()
+                return DistanceFieldEnum::Subtract( Subtract {left : left2,
+                    subtract: optsub, k: sub.k}).into()
                
             },
             DistanceFieldEnum::Coloring(c, i) => {
-                let opt = i.optimized_for_block( block_center, size, cache);
+                let opt = i.optimized_for_block2( block_center, size, cache, min_d);
                 if opt.eq(i) {
-                    return self.clone();
+                    return Rc::new(self.clone());
                 }
-                return DistanceFieldEnum::Coloring(c.clone(), Rc::new(opt));
+                return Rc::new(DistanceFieldEnum::Coloring(c.clone(), opt).into());
             }
             
-            _ => return self.clone(),
+            _ => return Rc::new(self.clone()),
         }
     }
 
@@ -492,7 +506,7 @@ impl DistanceFieldEnum {
         let sdf2 =
             self.optimized_for_block(pos2 + Vec3::new(size * 0.5, size * 0.5, size * 0.5), size, cache);//.cached(cache);
         
-        return (sdf2.distance(pos), sdf2);
+        return (sdf2.distance(pos), sdf2.as_ref().clone());
     }
 
     pub fn insert(&self, sdf: DistanceFieldEnum) -> DistanceFieldEnum {
@@ -694,6 +708,7 @@ impl DistanceFieldEnum {
                 false
                 
             },
+            
             DistanceFieldEnum::Empty => {
                 if let DistanceFieldEnum::Empty = other {
                     return true;
@@ -1009,7 +1024,7 @@ impl fmt::Display for DistanceFieldEnum{
                 }
             },
             DistanceFieldEnum::Subtract(sub) => write!(f, "(subtract {} {})", sub.left, sub.subtract),
-            DistanceFieldEnum::Empty => todo!(),
+            DistanceFieldEnum::Empty => write!(f, "[empty]"),
         }
     }
 }
@@ -1113,7 +1128,8 @@ mod tests {
             let a = sdf.distance(d);
             let b = block.distance(d);
             let c = sdfopt.distance(d);
-            
+            println!("OPTIMIZED:");
+            println!("{} unoptimized: {}", block, sdf);
             println!("block: {} {} {} {} {}", d, a, b, size, (a - c).abs());
             assert_eq!(a, b);
             if a < 0.0 {
@@ -1147,13 +1163,18 @@ mod tests {
     #[test]
     fn test_optimize_subtract(){
         let sdf = DistanceFieldEnum::Empty
-            .insert_2(Sphere::new(Vec3::new(0.0, 0.0, 0.0), 1.0))
-            .insert_2(Sphere::new(Vec3::new(2.0, 0.0, 0.0), 1.0));
+            .insert_2(Sphere::new(Vec3::new(0.0, 0.0, 0.0), 1.0).color(Rgba([0,0,0,1])))
+            .insert_2(Sphere::new(Vec3::new(2.0, 0.0, 0.0), 1.0).color(Rgba([0,0,0,1])));
         let sdf : DistanceFieldEnum = Subtract::new(sdf, Sphere::new(Vec3::new(3.0, 0.0, 0.0), 1.0), 0.0).into();
 
         let opt = sdf.optimize_bounds().optimize_bounds();
         println!("Opt: {}", opt);
-        run_test_on_range(sdf, opt, Vec3::new(1.0,0.0,0.0), Vec3::new(5.0, 5.0, 5.0), 1000, 0.2);
+        run_test_on_range(sdf.clone(), opt, Vec3::new(1.0,0.0,0.0), Vec3::new(5.0, 5.0, 5.0), 1000, 0.2);
+    
+        let opt2 = sdf.optimized_for_block(Vec3::new(0.0,0.0,0.0), 1.0, &mut HashSet::new());
+        println!("Opt2: {}", opt2);
+
+    
     }
 
     
