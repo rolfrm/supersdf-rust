@@ -427,11 +427,12 @@ impl DistanceFieldEnum {
     }
 
     pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>, min_d : f32) -> Rc<DistanceFieldEnum> {
+        let d1 = add.left.distance(block_center);
         let d2 = add.right.distance(block_center);
-        let left_opt = add.left.optimized_for_block2(block_center, size, cache, f32::min(d2, min_d));
-        let left_d = left_opt.distance(block_center);
-        let right_opt = add.right.optimized_for_block2(block_center, size, cache, f32::min(left_d, min_d));
+        let left_opt = add.left.optimized_for_block2(block_center, size, cache, f32::min(d1, f32::min(d2, min_d)));
+        let right_opt = add.right.optimized_for_block2(block_center, size, cache, f32::min(d1, f32::min(d2, min_d)));
         
+        let left_d = d1;
         let right_d = right_opt.distance(block_center);
         if left_d > right_d + size * SQRT3 {
             return right_opt;
@@ -497,7 +498,12 @@ impl DistanceFieldEnum {
                 return Rc::new(DistanceFieldEnum::Coloring(c.clone(), opt).into());
             }
             
-            _ => return Rc::new(self.clone()),
+            _ =>{
+                if self.distance(block_center) > min_d + size * SQRT3 * 2.0 {
+                    return Rc::new(DistanceFieldEnum::Empty);
+                }
+                return Rc::new(self.clone())
+            } 
         }
     }
 
@@ -601,14 +607,14 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Subtract(sub) => {
                 let left2 = sub.left.optimize_bounds();
                 let subbounds = sub.subtract.calculate_sphere_bounds();
-                println!("Subtract + add? {}", left2);
+                //println!("Subtract + add? {}", left2);
                 let mut new_left : DistanceFieldEnum = match &left2 {
                     DistanceFieldEnum::Add(inner_add ) => {
                         let left_bounds = inner_add.left.calculate_sphere_bounds();
                         let right_bounds = inner_add.right.calculate_sphere_bounds();
                         if !left_bounds.overlaps(&subbounds) {
                             if !right_bounds.overlaps(&subbounds) {
-                                println!("none overlaps! {:?} {:?} {:?} {}", left_bounds, right_bounds, subbounds, (right_bounds.center - subbounds.center).length());
+                                //println!("none overlaps! {:?} {:?} {:?} {}", left_bounds, right_bounds, subbounds, (right_bounds.center - subbounds.center).length());
                                 // neither bounds overlaps the subtraction -> just delete it.
                                 DistanceFieldEnum::Add(inner_add.clone())
                             }else {
@@ -733,7 +739,7 @@ impl DistanceFieldEnum {
                     sub.left.build_map(m);
                     sub.subtract.build_map(m);
                 },
-                DistanceFieldEnum::Empty => todo!(),
+                DistanceFieldEnum::Empty => {},
             }
         }
     }

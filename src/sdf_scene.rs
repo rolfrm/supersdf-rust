@@ -186,8 +186,8 @@ impl SdfScene {
         // if the size of the current cell is less than the lod cell size
         if cell_size <= lod_cell_size {
             
-
-            self.callback(key, cell_position, cell_size, &omodel, cell_size, lod_level);
+            let omodel2 = self.sdf.distance_and_optimize(cell_position, cell_size, &mut self.cache).1;
+            self.callback(key, cell_position, cell_size, &omodel2, cell_size, lod_level);
             
             return;
         }
@@ -228,7 +228,30 @@ mod tests {
             //println!("{:?}", block.2);
             
         }
-        
+    }
+
+    #[test]
+    fn test_progressive_holes(){
+        let mut sdf : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 100.0).into();
+        let mut prev = sdf.clone();
+        for i in 0..50 {
+            let start = Vec3::new(0.0, 0.0, 110.0);
+            let dir = Vec3::new(0.0, 0.0, -1.0);
+            let r = sdf.cast_ray(start, dir, 1000.0).unwrap();
+            println!("{} {}", r.0, r.1);
+            let newobj = Sphere::new(r.1, 2.0);
+            let sub = Subtract::new(sdf.clone(), newobj, 0.5);
+            sdf = sub.into();
+            let r = sdf.optimized_for_block(Vec3::new(0.0, 0.0, 95.0),2.0, &mut HashSet::new());
+            sdf = sdf.optimize_bounds();
+            println!("{}", r);
+            if i > 30 {
+                assert!(prev.eq(&r));
+            }
+            prev = r.as_ref().clone();
+        }
+
+
         
     }
 
