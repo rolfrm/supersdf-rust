@@ -6,15 +6,19 @@ mod triangle_raster;
 mod app_state;
 mod vec3;
 mod vec2;
+mod csg;
 use sdf::*;
 use sdf_scene::*;
 use app_state::*;
-
+mod surface_nets2;
+use surface_nets2::*;
 use kiss3d::light::Light; 
+
 
 use kiss3d::window::{Window};
 
 fn main() {
+    
     let sdf = build_test().optimize_bounds();
     println!("Final sdf: {:?}", sdf);
     let sdf_iterator = SdfScene::new(sdf);

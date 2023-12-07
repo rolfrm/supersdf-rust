@@ -243,6 +243,19 @@ pub struct Noise {
     c1: Rgba<u8>,
     c2: Rgba<u8>
 }
+fn fmt_rgba(f: &mut fmt::Formatter<'_>, c: Rgba<u8>){
+    write!(f, "#{:02x?}{:02x?}{:02x?}{:02x?}",c[0], c[1], c[2],c[3]);
+}
+
+impl fmt::Display for Noise{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Perlin ");
+        fmt_rgba(f, self.c1);
+        write!(f, " ");
+        fmt_rgba(f, self.c2);
+        return Ok(());
+    }
+}
 
 impl PartialEq for Noise {
     fn eq(&self, other: &Self) -> bool {
@@ -547,7 +560,7 @@ impl DistanceFieldEnum {
                 }
                 return self.insert(sdf.into());
             },
-            DistanceFieldEnum::Coloring(c, other) => DistanceFieldEnum::Coloring(c.clone(), Rc::new(other.insert_2(sdf))),
+            //DistanceFieldEnum::Coloring(c, other) => DistanceFieldEnum::Coloring(c.clone(), Rc::new(other.insert_2(sdf))),
             _ => self.insert(sdf.into())
         }
     }
@@ -898,7 +911,7 @@ impl Eq for DistanceFieldEnum {
 }
 
 pub fn build_test() -> DistanceFieldEnum {
-    let aabb2 = Sphere::new(Vec3::new(2.0, 0.0, 0.0), 1.0);
+    let aabb2 = Sphere::new(Vec3::new(20.0, 0.0, 0.0), 1.0);
     let grad = Noise::new(
         1543,
         Rgba([255, 255, 255, 255]),
@@ -906,7 +919,7 @@ pub fn build_test() -> DistanceFieldEnum {
         aabb2.into(),
     );
 
-    let sphere = Sphere::new(Vec3::new(-2.0, 0.0, 0.0), 2.0);
+    let sphere = Sphere::new(Vec3::new(-20.0, 0.0, 0.0), 2.0);
 
     let noise = Noise::new(
         123,
@@ -915,7 +928,9 @@ pub fn build_test() -> DistanceFieldEnum {
         sphere.into(),
     );
 
-    let sphere2 = Sphere::new(Vec3::new(0.0, -200.0, 0.0), 190.0);
+    let sphere2 = Sphere::new(Vec3::new(0.0, -200.0, 0.0), 10.0);
+    //let sphere3 = Sphere::new(Vec3::new(0.0, -200.0, 0.0), 180.0);
+    //let shell = Subtract::new(sphere2.clone(), sphere3.clone(), 0.0);
     let noise2 = Noise::new(
         123,
         Rgba([255, 155, 55, 255]),
@@ -1008,10 +1023,6 @@ pub fn build_big(n : i32) -> DistanceFieldEnum {
 }
 
 
-fn fmt_rgba(rgba: Rgba<u8>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{} {} {} {}]", rgba[0], rgba[1], rgba[2], rgba[3])
-}
-
 impl fmt::Display for DistanceFieldEnum{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -1026,7 +1037,7 @@ impl fmt::Display for DistanceFieldEnum{
                 match c {
                     Coloring::SolidColor(c) => write!(f, "(color: [{} {} {} {}] {})", c[0], c[1], c[2], c[3], inner),
                     Coloring::Gradient(g) => write!(f, "(gradient: ? {})", inner),
-                    Coloring::Noise(_) => write!(f, "(noise: ? {})", inner)
+                    Coloring::Noise(n) => write!(f, "(noise: (n: {}) {})", n, inner)
                 }
             },
             DistanceFieldEnum::Subtract(sub) => write!(f, "(subtract {} {})", sub.left, sub.subtract),
@@ -1034,6 +1045,7 @@ impl fmt::Display for DistanceFieldEnum{
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1235,6 +1247,14 @@ mod tests {
         let g = sdf.gradient(Vec3::new(-1.0, 0.0, 0.0), 0.1);
         println!("g: {}", g);
     }
+
+    #[test]
+    fn test_optimize_preserve_colors() {
+        let sdf = build_test().optimize_bounds();
+        let sdf2 = sdf.optimized_for_block(Vec3::new(-2.0, 0.0, 0.0), 5.0, &mut HashSet::new());
+        println!("g: {}", sdf);
+    }
+
 
 
 

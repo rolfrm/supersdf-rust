@@ -1,4 +1,4 @@
-use std::{ops::{Add, Sub, Mul, Div}, fmt, hash::Hasher, hash::Hash};
+use std::{ops::{Add, Sub, Mul, Div, Neg}, fmt, hash::Hasher, hash::Hash, iter::Sum};
 use kiss3d::nalgebra::{Point3, Vector3};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -11,12 +11,15 @@ pub struct Vec3{
 impl Hash for Vec3 {
     fn hash<H>(&self, state: &mut H)
        where H: Hasher{
-        state.write_i32((self.x * 10.0) as i32);
-        state.write_i32((self.y * 10.0) as i32);
-        state.write_i32((self.z * 10.0) as i32);
+        state.write_i32((self.x * 1000.0) as i32);
+        state.write_i32((self.y * 1000.0) as i32);
+        state.write_i32((self.z * 1000.0) as i32);
         
        }
+}
 
+impl std::cmp::Eq for Vec3 {
+    
 }
 
 impl Vec3 {
@@ -28,6 +31,10 @@ impl Vec3 {
     // Compute the magnitude of the vector
     pub fn length(&self) -> f32 {
         self.length_squared().sqrt()
+    }
+
+    pub fn compare(&self, other : &Self, eps: f32) -> bool {
+        (self.x - other.x).abs() < eps &&(self.y - other.y).abs() < eps &&(self.z - other.z).abs() < eps
     }
 
     // Normalize the vector
@@ -58,8 +65,29 @@ impl Vec3 {
     pub fn max(self, other: Vec3) -> Vec3{ self.map2(other, f32::max) }
 
     pub fn dot(self, other: Self) -> f32 { self.x * other.x + self.y * other.y + self.z * other.z }
+
+    pub fn cross(&self, other: Vec3) -> Vec3 {
+        let cross_x = self.y * other.z - self.z * other.y;
+        let cross_y = self.z * other.x - self.x * other.z;
+        let cross_z = self.x * other.y - self.y * other.x;
+
+        Vec3 {
+            x: cross_x,
+            y: cross_y,
+            z: cross_z,
+        }
+    }
+
+    pub fn interpolate(&self, other: Self, t:f32) -> Self{
+        (1.0 - t) * self + other * t
+    }
 }
 
+impl<'a> Sum<&'a Vec3> for Vec3 {
+    fn sum<I: Iterator<Item = &'a Vec3>>(iter: I) -> Vec3 {
+        iter.fold(Vec3 { x: 0.0, y: 0.0, z: 0.0 }, |acc, &x| acc + x)
+    }
+}
 
 impl Add<Vec3> for Vec3 {
     type Output = Self;
@@ -179,6 +207,13 @@ impl Mul<&Vec3> for f32 {
             y: self * vec.y,
             z: self * vec.z,
         }
+    }
+}
+
+impl Neg for Vec3 {
+    type Output = Vec3;
+    fn neg(self) -> Vec3 {
+        Vec3::new(-self.x, -self.y, - self.z)
     }
 }
 

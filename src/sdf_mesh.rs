@@ -1,4 +1,4 @@
-use crate::{mc, sdf, triangle_raster, vec3::{Vec3, IntoVector3Array}, vec2::{Vec2, IntoVector2Array}};
+use crate::{mc, sdf, triangle_raster, vec3::{Vec3, IntoVector3Array}, vec2::{Vec2, IntoVector2Array}, surface_nets2::surface_net};
 
 use std::collections::{HashMap, HashSet};
 
@@ -6,9 +6,10 @@ use kiss3d::resource::Mesh;
 use mc::*;
 use sdf::*;
 use triangle_raster::*;
+use nalgebra as na;
 
 use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
-use kiss3d::nalgebra::{Const, OPoint, Point2, Point3, Vector2, Vector3};
+use kiss3d::nalgebra::{Const, OPoint, Point3, Vector3};
 
 pub struct VertexesList {
     verts: Vec<Vec3>,
@@ -83,7 +84,7 @@ fn interpolate_color2(
     let w0 = f(point, v1, v2);
     let w1 = f(point, v2, v0);
     let w2 = f(point, v0, v1);
-
+    
     w0 * c0 + w1 * c1 + w2 * c2
 }
 
@@ -252,5 +253,105 @@ pub fn marching_cubes_sdf<T1: DistanceField, T: MarchingCubesReciever>(
                 marching_cubes_sdf(recv, model, p, s2, res);
             }
         }
+    }
+}
+
+pub fn surface_nets_block(
+    model: &DistanceFieldEnum,
+    position: Vec3,
+    size: f32,
+    res: f32) -> VertexesList{
+        
+        let halfsize = Vec3::new(size as f32, size as f32, size as f32) * 0.5;
+        let mut mesh = surface_net(16, &|x,y,z|{
+                
+                return model.distance(Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5) / 16.0 * size + position - halfsize ) * 16.0;
+            }, true);
+        let mut verts = VertexesList::new();
+        for x in mesh.2 {
+            let v = mesh.0[x];
+            verts.verts.push(Vec3::new(v[0]/*  / 16.0 - 0.5*/, v[1]/ 16.0 - 0.5, v[2] / 16.0 - 0.5) /* size * 2.0*/ + position);
+        }
+        return verts;
+    }
+    pub fn fast_surface_nets_block(
+        model: &DistanceFieldEnum,
+        position: Vec3,
+        size: f32,
+        res: f32) -> VertexesList{
+            
+            let halfsize = Vec3::new(size as f32, size as f32, size as f32) * 0.5;
+            //fast_surface_nets::surface_nets();
+            let mut mesh = surface_net(16, &|x,y,z|{
+                    
+                    return model.distance(Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5) / 16.0 * size + position - halfsize ) * 16.0;
+                }, true);
+            let mut verts = VertexesList::new();
+            for x in mesh.2 {
+                let v = mesh.0[x];
+                verts.verts.push(Vec3::new(v[0]/*  / 16.0 - 0.5*/, v[1]/ 16.0 - 0.5, v[2] / 16.0 - 0.5) /* size * 2.0*/ + position);
+            }
+            return verts;
+        }
+    
+struct DistanceFieldEnumBlock{
+    bbox:tessellation::BoundingBox<f64> ,
+    sdf: DistanceFieldEnum
+}
+
+    impl tessellation::ImplicitFunction<f64> for DistanceFieldEnumBlock {
+        fn bbox(&self) -> &tessellation::BoundingBox<f64> {
+          &self.bbox
+        }
+       fn value(&self, p: &na::Point3<f64>) -> f64 {
+        let p = Vec3::new(p.x as f32, p.y as f32, p.z as f32);
+         return self.sdf.distance(p) as f64;
+       }
+       fn normal(&self, p: &na::Point3<f64>) -> na::Vector3<f64> {
+        let p =Vec3::new(p.x as f32, p.y as f32, p.z as f32);
+         let n = self.sdf.gradient(p, 0.001);
+         return na::Vector3::new(n.x as f64, n.y as f64, n.z as f64);
+       }
+     }
+
+pub fn dual_contour_block(model: &DistanceFieldEnum,
+    position: Vec3,
+    size: f32,
+    res: f32){
+        let block = DistanceFieldEnumBlock{sdf: model.clone(), bbox: tessellation::BoundingBox { 
+            min: na::Point3::new(-1.0,-1.0,-1.0), max: na::Point3::new(1.,1.,1.)}};
+        let mut m = tessellation::ManifoldDualContouring::new(&block, res as f64, (res * 0.5) as f64);
+        if let Some(mesh) = m.tessellate(){
+            
+
+        }
+    }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use rand::{rngs::{ThreadRng, StdRng}, SeedableRng};
+
+    use super::*;
+
+    #[test]
+    fn test_mc_vs_surface_nets(){
+        let sdf = build_test().optimize_bounds();
+        let loc = Vec3::new(0.0,0.0,0.0);
+        //dual_contour_block(&sdf, loc, 1.0, 0.5);
+        let lst2 = surface_nets_block(&sdf, loc, 1.0, 0.1);
+        let mut lst = VertexesList::new();
+        marching_cubes_sdf(&mut lst, &sdf,loc, 1.0, 0.2);
+        println!("{} {}", lst2.len(), lst.len());
+        for x in lst2.verts {
+            println!("{}", x);
+        }
+        println!("----");
+        for x in lst.verts {
+            println!("{}", x);
+        }
+        
+
     }
 }

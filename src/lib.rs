@@ -6,11 +6,12 @@ mod triangle_raster;
 mod app_state;
 mod vec3;
 mod vec2;
-
+mod surface_nets2;
+use surface_nets2::*;
 use sdf::*;
 use sdf_scene::*;
 use app_state::*;
-
+mod csg;
 use kiss3d::light::Light;
 
 use kiss3d::window::{Window};
