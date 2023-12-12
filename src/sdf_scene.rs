@@ -99,6 +99,15 @@ impl SdfScene {
          }
     } 
 
+    pub fn with_eye_pos(mut self, v: Vec3f) -> SdfScene{
+        self.eye_pos = v;
+        return self;
+    }
+
+    //pub fn with_eye_dir(mut self, dir: Vec3f) -> SdfScene {
+        
+    //}
+
     fn callback(
         &mut self,
         key: SdfKey,
@@ -112,7 +121,29 @@ impl SdfScene {
     }
 
     fn skip_block(&self, p: Vec3, size: f32) -> bool {
-        !is_in_frustum(&self.cam, p, size * 2.0)
+        return self.skip_block2(p, size)
+    }
+
+    fn skip_block2(&self, p: Vec3, size: f32) -> bool {
+        let eye = self.eye_pos;
+        let d0 = self.sdf.distance(p);
+        let dir = (p - eye).normalize();
+        {
+            let mut it = eye + dir * d0;
+            for i in 0..8 {
+                let d = self.sdf.distance(it) + size * 0.5;
+                let deye = (it - p).length();
+                if(d < 0.0 && deye > size){
+                    println!("ray failed. {} {}", d, deye);
+                    return true;
+                }
+                it = it + dir * d;
+
+            }
+            
+        }
+
+        return !is_in_frustum(&self.cam, p, size * 2.0)
     }
 
     pub fn iterate_scene(&mut self, p: Vec3, size: f32) {

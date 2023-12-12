@@ -1,13 +1,12 @@
 use std::{collections::{HashMap, HashSet}, rc::Rc};
 
-use crate::{sdf, sdf_scene::{SdfScene, SdfKey}, sdf_mesh::{VertexesList, marching_cubes_sdf}, vec3::Vec3, surface_nets2::surface_net};
+use crate::{sdf, sdf_scene::{SdfScene, SdfKey}, sdf_mesh::{VertexesList, marching_cubes_sdf}, vec3::Vec3};
 use crate::csg::{Mesh2, CsgNode, Plane};
-use image::Rgba;
 use sdf::*;
 
 
 
-use kiss3d::{nalgebra::{Vector3, Point3, Point2, Vector2, Translation3, Unit, UnitQuaternion}, resource::{TextureManager, Mesh}, camera::{ArcBall, Camera, FirstPerson}, scene::SceneNode, window::{State, Window}, event::{MouseButton, WindowEvent, Action, Key}};
+use kiss3d::{nalgebra::{Vector3, Point3, Point2, Vector2, Unit, UnitQuaternion}, resource::{TextureManager, Mesh}, camera::{ArcBall, Camera, FirstPerson}, scene::SceneNode, window::{State, Window}, event::{MouseButton, WindowEvent, Action, Key}};
 
 type Vec2 = Vector2<f32>;
 
@@ -24,7 +23,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(sdf_iterator: SdfScene) -> AppState {
-        let cam = FirstPerson::new(Point3::new(0.0,0.0,-5.0), Point3::new(0.0, 0.0, 0.0));
+        let cam = FirstPerson::new(sdf_iterator.eye_pos.into(), Point3::new(0.0, 0.0, 0.0));
         /*let mut cam = ArcBall::new_with_frustrum(1.0, 0.1, 1000.0, 
             Point3::new(0.0, 0.0, -5.0), 
             Point3::new(0.0, 0.0, 0.0));
@@ -163,6 +162,8 @@ impl State for AppState {
             let n = &mut node.1.0;    
             n.set_visible(false);    
         }
+        let eye = self.sdf_iterator.eye_pos;
+        println!("eye: {}", eye);
         let mut reload_count = 0;
         for block in &self.sdf_iterator.render_blocks {
             loop {
@@ -172,24 +173,17 @@ impl State for AppState {
                 
                 let size = pos.w as f32;
                 let pos = block.0;
+
+                
+               
                 
                 let mut r = VertexesList::new();
                 let newsdf = sdf2.optimized_for_block(block.0.into(), size,&mut self.sdf_cache)
                     .cached(&mut self.sdf_cache).clone();
-                {
-                    let newsdf2 = newsdf.clone();
-                    {
-                        let halfsize = Vec3::new(size as f32, size as f32, size as f32) * 0.5;
-                        let mesh = surface_net(16, &|x,y,z|{
-                            
-                            return newsdf2.distance(Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5) / 16.0 * size + block.0 - halfsize ) * 16.0;
-                        }, true);
-                        println!("Surf: {} {:?} {:?}", size,  mesh.0.len(), mesh.1.len());
-                    //let r = surface_net(10, &f, false);
-                    }
-                }
+                
                 marching_cubes_sdf(&mut r, &newsdf, block.0.into(), size, 0.4 * 2.0_f32.powf(block.4));
-                println!("mc: {} {}\n", r.len(), size as f32 / 0.4 * 2.0_f32.powf(block.4) );
+                //cubify(&mut r, &newsdf, block.0.into(), size, 0.4 * 2.0_f32.powf(block.4));
+                //println!("mc: {} {}\n", r.len(), size as f32 / 0.4 * 2.0_f32.powf(block.4) );
                 
                 if r.any() {
                     

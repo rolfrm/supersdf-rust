@@ -26,9 +26,7 @@ kiss3d = "0.35.1"
 image = "0.24"
 rand = "0.8.5"
 noise = "0.8.2"
-tessellation = "0.8.2"
 nalgebra = "0.22.1"
-fast-surface-nets = "0.2.0"
 bitflags = "2.4.0"
 
 [patch.crates-io]

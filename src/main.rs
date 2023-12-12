@@ -10,9 +10,8 @@ mod csg;
 use sdf::*;
 use sdf_scene::*;
 use app_state::*;
-mod surface_nets2;
-use surface_nets2::*;
 use kiss3d::light::Light; 
+use vec3::Vec3;
 
 
 use kiss3d::window::{Window};
@@ -21,7 +20,7 @@ fn main() {
     
     let sdf = build_test().optimize_bounds();
     println!("Final sdf: {:?}", sdf);
-    let sdf_iterator = SdfScene::new(sdf);
+    let sdf_iterator = SdfScene::new(sdf).with_eye_pos(Vec3::new(58.0, -31.0, -12.0));
 
     let mut window = Window::new("Kiss3d: wasm example");
     

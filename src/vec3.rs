@@ -1,7 +1,7 @@
 use std::{ops::{Add, Sub, Mul, Div, Neg}, fmt, hash::Hasher, hash::Hash, iter::Sum};
 use kiss3d::nalgebra::{Point3, Vector3};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Vec3{
     pub x : f32,
     pub y : f32,
