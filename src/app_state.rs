@@ -156,7 +156,7 @@ impl State for AppState {
             .coords.xyz().map(|x| f32::floor(x / 16.0) * 16.0).into();
         self.sdf_iterator.eye_pos = self.camera.eye().to_homogeneous().xyz().into();
         self.sdf_iterator.cam = (&self.camera).transformation();
-        self.sdf_iterator.iterate_scene(centerpos, 128.0);
+        self.sdf_iterator.iterate_scene(centerpos, 8.0 * 128.0);
 
         for node in self.nodes.iter_mut() {
             let n = &mut node.1.0;    
@@ -197,7 +197,10 @@ impl State for AppState {
 
                     let mut node =
                         win.add_mesh(Rc::new(meshtex.0.into()), Vec3::new(1.0, 1.0, 1.0).into());
-                    node.set_texture(tex2);
+                    //node.set_lines_width(1.0);
+                    //node.set_surface_rendering_activation(false);
+                        
+                    //node.set_texture(tex2);
                     return (node, block.3.clone(), size, pos);
                 } else {
                     return (win.add_group(), block.3.clone(), size, pos);

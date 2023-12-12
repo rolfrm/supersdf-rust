@@ -18,9 +18,13 @@ use kiss3d::window::{Window};
 
 fn main() {
     
-    let sdf = build_test().optimize_bounds();
+    let s1 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 100.0).into();
+        let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 120.0), 10.0).into();
+        let a1 : DistanceFieldEnum = Add::new(s1,s2).into();
+
+    let sdf = a1.optimize_bounds();
     println!("Final sdf: {:?}", sdf);
-    let sdf_iterator = SdfScene::new(sdf).with_eye_pos(Vec3::new(58.0, -31.0, -12.0));
+    let sdf_iterator = SdfScene::new(sdf).with_eye_pos(Vec3::new(0.0, 110.0, 0.0));
 
     let mut window = Window::new("Kiss3d: wasm example");
     

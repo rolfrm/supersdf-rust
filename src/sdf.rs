@@ -316,7 +316,7 @@ fn rgba_interp(a: Rgba<u8>, b: Rgba<u8>, v: f32) -> Rgba<u8> {
     ])
 }
 impl Add {
-    fn new(left: DistanceFieldEnum, right: DistanceFieldEnum) -> Add {
+    pub fn new(left: DistanceFieldEnum, right: DistanceFieldEnum) -> Add {
         Add::from_rc(Rc::new(left), Rc::new(right))
     }
 
@@ -911,7 +911,7 @@ impl Eq for DistanceFieldEnum {
 }
 
 pub fn build_test() -> DistanceFieldEnum {
-    let aabb2 = Sphere::new(Vec3::new(20.0, -20.0, 0.0), 20.0);
+    let aabb2 = Sphere::new(Vec3::new(20.0, -100.0, 0.0), 80.0);
     let grad = Noise::new(
         1543,
         Rgba([255, 255, 255, 255]),

@@ -1,12 +1,11 @@
-use std::collections::{HashSet, HashMap};
+use std::{collections::{HashSet, HashMap}, f32::consts::SQRT_2};
 
 use crate::{sdf, vec3::Vec3};
 use sdf::*;
 
-use kiss3d::{nalgebra::{Vector2, Point3, Matrix4}, camera::{Camera, ArcBall, FirstPerson}};
+use kiss3d::{nalgebra::{Point3, Matrix4}, camera::{Camera, ArcBall, FirstPerson}};
 
 type Vec3f = Vec3;
-type Vec2 = Vector2<f32>;
 
 #[derive(Eq, PartialEq, Hash, Debug, Clone, Copy)]
 pub struct SdfKey {
@@ -30,7 +29,6 @@ fn is_in_frustum(cam: &Matrix4<f32>, pos : Vec3, size : f32) -> bool{
        let v3 = cam * v2.to_homogeneous();
        let v4 = Point3::from_homogeneous(v3);
        if let None = v4 {
-        println!("Issue: {:?}", v3);
           continue;
        }
        let v: Vec3 = v4.unwrap().into();
@@ -58,6 +56,8 @@ fn is_in_frustum(cam: &Matrix4<f32>, pos : Vec3, size : f32) -> bool{
     return true;
   }
 
+
+
 pub enum CameraEnum{
     ArcBall(ArcBall),
     FirstPerson(FirstPerson),
@@ -74,6 +74,33 @@ impl Into<CameraEnum> for &ArcBall {
     fn into(self) -> CameraEnum {
         CameraEnum::ArcBall(self.clone())
     }
+}
+
+fn box_is_occluded(eye: Vec3, p: Vec3, size: f32, sdf: &DistanceFieldEnum) -> bool 
+{
+    
+        let d0 = sdf.distance(eye);
+        
+        let dir = (p - eye).normalize();
+        if(size > 2.0) {
+            let mut it = eye + dir * d0;
+            for _ in 0..16 {
+                let d = sdf.distance(it) + size * 0.5;
+                if(d > 1000.0){
+                    break;
+                }
+                let deye = (it - p).length();
+                if(d < 0.01 * size && deye > size * SQRT3 * 3.0){
+                    return true;
+                }
+                if d < 0.01 * size && deye - size < d {
+                    return false;
+                }
+                it = it + dir * d;
+
+            }
+        }
+        return false;
 }
 
 pub struct SdfScene {
@@ -125,25 +152,16 @@ impl SdfScene {
     }
 
     fn skip_block2(&self, p: Vec3, size: f32) -> bool {
+        if(!is_in_frustum(&self.cam, p, size * 2.0)){
+            return false;
+        }
         let eye = self.eye_pos;
-        let d0 = self.sdf.distance(p);
-        let dir = (p - eye).normalize();
-        {
-            let mut it = eye + dir * d0;
-            for i in 0..8 {
-                let d = self.sdf.distance(it) + size * 0.5;
-                let deye = (it - p).length();
-                if(d < 0.0 && deye > size){
-                    println!("ray failed. {} {}", d, deye);
-                    return true;
-                }
-                it = it + dir * d;
-
-            }
-            
+        let occluded = box_is_occluded(eye, p, size, &self.sdf);
+        if occluded {
+            return true;
         }
 
-        return !is_in_frustum(&self.cam, p, size * 2.0)
+        return false;
     }
 
     pub fn iterate_scene(&mut self, p: Vec3, size: f32) {
@@ -281,8 +299,35 @@ mod tests {
             }
             prev = r.as_ref().clone();
         }
+    }
+    #[test]
+    fn test_occlusion(){
 
+    
 
+        let s1 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 100.0).into();
+        let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 120.0), 10.0).into();
+        let a1 : DistanceFieldEnum = Add::new(s1,s2).into();
+
+        let occluded = box_is_occluded(Vec3::new(0.0, 0.0, -110.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        assert!(occluded);
+        let occluded2 = box_is_occluded(Vec3::new(0.0, 0.0, 110.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        assert!(!occluded2);
+
+        let occluded3 = box_is_occluded(Vec3::new(10.0, 10.0, -110.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        assert!(occluded3);
+        let occluded4 = box_is_occluded(Vec3::new(0.0, 0.0, -95.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        assert!(occluded4);
+        let occluded5 = box_is_occluded(Vec3::new(0.0, 0.0, 95.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        assert!(occluded5);
+        let occluded5 = box_is_occluded(Vec3::new(0.0, 95.0, -50.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        assert!(occluded5);
+        let occluded5 = box_is_occluded(Vec3::new(0.0, 95.0, 50.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        assert!(!occluded5);
+        let occluded5 = box_is_occluded(Vec3::new(0.0, 100.0, -45.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        assert!(occluded5);
+        let occluded5 = box_is_occluded(Vec3::new(0.0, 100.0, 45.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        assert!(!occluded5);
         
     }
 
