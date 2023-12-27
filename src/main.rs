@@ -6,7 +6,9 @@ mod triangle_raster;
 mod app_state;
 mod vec3;
 mod vec2;
+mod color;
 mod csg;
+use color::*;
 use sdf::*;
 use sdf_scene::*;
 use app_state::*;
@@ -18,13 +20,15 @@ use kiss3d::window::{Window};
 
 fn main() {
     
-    let s1 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 100.0).into();
-        let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 120.0), 10.0).into();
-        let a1 : DistanceFieldEnum = Add::new(s1,s2).into();
+    let s1 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 50.0, 50.0), 50.0).into();
+    let s1 = s1.colored(Color::rgba(0.0,0.0,1.0, 1.0));
+    let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 55.0, 00.0), 10.0).into();
+    let s2 = s2.colored(Color::rgb(1.0,0.0,0.0));
+    let a1 : DistanceFieldEnum = Add::new(s1,s2).into();
 
     let sdf = a1.optimize_bounds();
     println!("Final sdf: {:?}", sdf);
-    let sdf_iterator = SdfScene::new(sdf).with_eye_pos(Vec3::new(0.0, 110.0, 0.0));
+    let sdf_iterator = SdfScene::new(sdf).with_eye_pos(Vec3::new(10.0, 60.0, 0.0));
 
     let mut window = Window::new("Kiss3d: wasm example");
     

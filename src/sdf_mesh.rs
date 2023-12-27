@@ -1,37 +1,250 @@
-use crate::{mc, sdf, triangle_raster, vec3::{Vec3, IntoVector3Array}, vec2::{Vec2, IntoVector2Array}};
+use crate::{
+    mc, sdf, triangle_raster,
+    vec2::{IntoVector2Array, Vec2},
+    vec3::{IntoVector3Array, Vec3},
+};
 
 use std::collections::{HashMap, HashSet};
 
+use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
+use kiss3d::nalgebra::{Const, OPoint, Point3, Vector3};
 use kiss3d::resource::Mesh;
 use mc::*;
 use sdf::*;
 use triangle_raster::*;
-use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
-use kiss3d::nalgebra::{Const, OPoint, Point3, Vector3};
 
-pub struct VertexesList {
-    verts: Vec<Vec3>,
+pub struct TriangleList {
+    triangles: Vec<[Vec3; 3]>,
 }
 
-impl VertexesList {
-    pub fn new() -> VertexesList {
-        VertexesList { verts: Vec::new() }
+impl TriangleList {
+    pub fn new() -> TriangleList {
+        TriangleList {
+            triangles: Vec::new(),
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.verts.len()
+        self.triangles.len()
     }
 
     pub fn any(&self) -> bool {
-        self.verts.len() > 0
+        self.triangles.len() > 0
+    }
+
+    pub fn vertices<'a>(&'a self) -> impl Iterator<Item = &'a Vec3> {
+        self.triangles.iter().flatten()
     }
 }
 
-impl MarchingCubesReciever for VertexesList {
+impl MarchingCubesReciever for TriangleList {
     fn receive(&mut self, v1: Vec3, v2: Vec3, v3: Vec3) {
-        self.verts.push(v3);
-        self.verts.push(v2);
-        self.verts.push(v1);
+        self.triangles.push([v1, v2, v3]);
+    }
+}
+
+pub struct Triangles {
+    pub vertices: Vec<Vec3>,
+    triangles: Vec<[usize; 3]>, // Indices of vertices forming triangles
+}
+
+impl Triangles {
+    pub fn from_triangle_list(triangles: &TriangleList) -> Triangles {
+        let mut map: HashMap<Vec3, usize> = HashMap::new();
+        let mut verts = Vec::new();
+        let mut indexes = Vec::new();
+        for x in triangles.vertices() {
+            let p = x.round(100.0);
+            let cur = map.get(&p);
+            if cur.is_none() {
+                let id = map.len();
+                map.insert(p, id);
+                verts.push(p);
+                indexes.push(id);
+            } else {
+                indexes.push(*cur.unwrap())
+            }
+        }
+
+        Triangles {
+            vertices: verts,
+            triangles: indexes
+                .chunks_exact(3)
+                .into_iter()
+                .map(|chunk| [chunk[0], chunk[1], chunk[2]])
+                .collect(),
+        }
+    }
+    pub fn to_triangle_list(&self) -> TriangleList {
+        let mut verts = self
+            .triangles
+            .iter()
+            .map(|x| {
+                [
+                    self.vertices[x[0]],
+                    self.vertices[x[1]],
+                    self.vertices[x[2]],
+                ]
+            })
+            .collect();
+        TriangleList { triangles: verts }
+    }
+
+    pub fn triangle_count(&self) -> usize {
+        self.triangles.len()
+    }
+
+    pub fn triangle(&mut self, triangle_index: usize) -> Option<[Vec3; 3]> {
+        if triangle_index >= self.triangles.len() {
+            return None;
+        }
+        let t = self.triangles[triangle_index];
+        return Some([
+            self.vertices[t[0]],
+            self.vertices[t[1]],
+            self.vertices[t[2]],
+        ]);
+    }
+
+    pub fn triangleidx(&mut self, triangle_index: usize) -> Option<[usize; 3]> {
+        if triangle_index >= self.triangles.len() {
+            return None;
+        }
+        let t = self.triangles[triangle_index];
+        return Some(t);
+    }
+
+    pub fn triangle_size(&self, triangle_index: usize) -> Option<f32> {
+        if triangle_index >= self.triangles.len() {
+            return None;
+        }
+        let triangle = self.triangles[triangle_index];
+        let a = self.vertices[triangle[0]];
+        let b = self.vertices[triangle[1]];
+        let c = self.vertices[triangle[2]];
+
+        let la = (a - b).length();
+        let lb = (a - c).length();
+        let lc = (c - b).length();
+        let s = (la + lb + lc) * 0.5;
+        let area = (s * (s - la) * (s - lb) * (s - lc)).sqrt();
+        return Some(area);
+    }
+
+    pub fn collapse_triangle(&mut self, triangle_index: usize) {
+        if triangle_index >= self.triangles.len() {
+            return; // Or handle the error as needed
+        }
+
+        for (i, x) in self.vertices.iter().enumerate() {
+            for (i2, x2) in self.vertices.iter().enumerate() {
+                if (i == i2) {
+                    continue;
+                }
+                let dother = (*x - *x2).length();
+                //assert!(dother >=0.005)
+            }
+        }
+
+        let triangle = self.triangles[triangle_index];
+        let a = self.vertices[triangle[0]];
+        let b = self.vertices[triangle[1]];
+        let c = self.vertices[triangle[2]];
+        let center = (a + b + c) / 3.0;
+        self.vertices[triangle[0]] = center.round(100.0);
+
+        self.vertices[triangle[1]] = self.vertices[triangle[0]];
+        self.vertices[triangle[2]] = self.vertices[triangle[0]];
+        for trig in &mut self.triangles {
+            for i in 1..3 {
+                if (trig[0] == triangle[i]) {
+                    trig[0] = triangle[0];
+                }
+                if (trig[1] == triangle[i]) {
+                    trig[1] = triangle[0];
+                }
+                if (trig[2] == triangle[i]) {
+                    trig[2] = triangle[0];
+                }
+            }
+        }
+        // Step 3: Remove the collapsed triangle
+        self.triangles.remove(triangle_index);
+    }
+
+    pub fn collapse_triangle2(&mut self, triangle_index: usize) {
+        // Ensure the triangle index is valid
+        if triangle_index >= self.triangles.len() {
+            return; // Or handle the error as needed
+        }
+
+        let triangle = self.triangles[triangle_index];
+
+        // Check if any vertex is shared by other triangles
+        let shared_vertices = self
+            .triangles
+            .iter()
+            .filter(|&t| t != &triangle && t.iter().any(|&v| triangle.contains(&v)));
+
+        // For simplicity, let's collapse the first shared vertex
+        if let Some(shared_triangle) = shared_vertices.clone().next() {
+            let shared_vertex = shared_triangle.iter().find(|&v| triangle.contains(v));
+
+            if let Some(&shared_vertex_index) = shared_vertex {
+                // Update the shared vertices in other triangles to use the remaining vertex
+                for t in &mut self.triangles {
+                    for v in t.iter_mut() {
+                        if *v == shared_vertex_index {
+                            *v = triangle
+                                .iter()
+                                .find(|&t| t != &shared_vertex_index)
+                                .cloned()
+                                .unwrap();
+                        }
+                    }
+                }
+
+                // Remove the collapsed triangle
+                self.triangles.remove(triangle_index);
+            }
+        }
+    }
+
+    pub fn split_triangle(&mut self, triangle_index: usize) {
+        // Ensure the triangle index is valid
+        if triangle_index >= self.triangles.len() {
+            return;
+        }
+
+        // Get the indices of the vertices of the triangle
+        let triangle = self.triangles[triangle_index];
+        let v0 = self.vertices[triangle[0]];
+        let v1 = self.vertices[triangle[1]];
+        let v2 = self.vertices[triangle[2]];
+
+        // Calculate midpoints of each edge
+        let m01 = (v0 + v1) * 0.5;
+        let m12 = (v1 + v2) * 0.5;
+        let m20 = (v2 + v0) * 0.5;
+
+        // Add midpoints to the vertices list
+        let m01_index = self.vertices.len();
+        self.vertices.push(m01);
+        let m12_index = self.vertices.len();
+        self.vertices.push(m12);
+        let m20_index = self.vertices.len();
+        self.vertices.push(m20);
+
+        // Create new triangles
+        self.triangles.push([triangle[0], m01_index, m20_index]);
+        self.triangles.push([m01_index, triangle[1], m12_index]);
+        self.triangles.push([m20_index, m12_index, triangle[2]]);
+        self.triangles.push([m01_index, m12_index, m20_index]);
+
+        // Remove or modify the original triangle
+        // This depends on how you want to handle the original triangle.
+        // For example, you might want to remove it:
+        self.triangles.remove(triangle_index);
     }
 }
 
@@ -82,7 +295,7 @@ fn interpolate_color2(
     let w0 = f(point, v1, v2);
     let w1 = f(point, v2, v0);
     let w2 = f(point, v0, v1);
-    
+
     w0 * c0 + w1 * c1 + w2 * c2
 }
 
@@ -100,16 +313,16 @@ impl VecKey for Vec3 {
     }
 }
 
-impl VertexesList {
+impl TriangleList {
     pub fn to_mesh(&self, sdf: &DistanceFieldEnum) -> (Mesh, DynamicImage) {
         let mut coords: Vec<Point3<f32>> = Vec::new();
         let mut faces = Vec::new();
-        let mut uvs : Vec<Vec2> = Vec::new();
+        let mut uvs: Vec<Vec2> = Vec::new();
         let mut face: OPoint<u16, Const<3>> = Point3::new(0, 0, 0);
         let mut normals = Vec::new();
         let mut faceit = 0;
         let mut it = 0;
-        let ntriangles: i64 = (self.verts.len() / 3) as i64;
+        let ntriangles: i64 = (self.triangles.len()) as i64;
         let columns = f64::ceil(f64::sqrt(
             f64::try_from(u32::try_from(ntriangles).unwrap()).unwrap(),
         )) as i64;
@@ -125,7 +338,7 @@ impl VertexesList {
         let mut max = Vec3::new(-100000.0, -100000.0, -100000.0);
         let mut min = Vec3::new(-100000.0, -100000.0, -100000.0);
 
-        for v in &self.verts {
+        for v in self.vertices() {
             min = min.min(*v);
             max = max.max(*v);
             let key = v.key();
@@ -141,8 +354,7 @@ impl VertexesList {
 
         let sdf = sdf.optimized_for_block(mid, size, &mut cache);
 
-
-        for v in &self.verts {
+        for v in self.vertices() {
             let facei: i64 = faces.len() as i64;
             let row = (facei / columns) as f64;
             let col = (facei % columns) as f64;
@@ -171,11 +383,16 @@ impl VertexesList {
             faceit += 1;
             if faceit == 3 {
                 faceit = 0;
+                // something is up with these faces!! :(
+                let v0 = face[0];
+                let v1 = face[2];
+                face[0] = v1;
+                face[2] = v0;
                 faces.push(face);
 
-                let va : Vec3 = coords[coords.len() - 3].to_homogeneous().xyz().into();
-                let vb : Vec3 = coords[coords.len() - 2].to_homogeneous().xyz().into();
-                let vc : Vec3 = coords[coords.len() - 1].to_homogeneous().xyz().into();
+                let va: Vec3 = coords[coords.len() - 3].to_homogeneous().xyz().into();
+                let vb: Vec3 = coords[coords.len() - 2].to_homogeneous().xyz().into();
+                let vc: Vec3 = coords[coords.len() - 1].to_homogeneous().xyz().into();
 
                 // now trace the colors into the texture for this triangle.
                 let uva: Vec2 = uvs[uvs.len() - 3];
@@ -196,7 +413,7 @@ impl VertexesList {
                 let mid2 = (max2 + min2) * 0.5;
                 let size2 = (max2 - min2).length() * 0.5;
                 let sdf2 = sdf.optimized_for_block(mid2, size2, &mut cache);
-                
+
                 iter_triangle(&trig, |pixel| {
                     let x = pixel.x as u32;
                     let y = pixel.y as u32;
@@ -204,7 +421,7 @@ impl VertexesList {
                     let v0 = interpolate_vec2(pa, pb, pc, va, vb, vc, px2);
 
                     if x < buf.width() && y < buf.height() {
-                        let dc = sdf2.color(v0);
+                        let dc = sdf2.color(v0).to_u8_rgba();
                         buf.put_pixel(x, y, dc);
                     }
                 });
@@ -228,35 +445,97 @@ impl VertexesList {
 
 static SQRT_3: f32 = 1.7320508;
 
-pub fn marching_cubes_sdf<T1: DistanceField, T: MarchingCubesReciever>(
-    recv: &mut T,
+pub fn marching_cubes_sdf<T1: DistanceField>(
+    recv: &mut TriangleList,
     model: &T1,
     position: Vec3,
     size: f32,
     res: f32,
-) {
+    start_size: f32,
+) -> bool {
     let d = model.distance(position);
     if d < size * SQRT_3 {
         if d < -size * SQRT_3 {
-            return;
+            return false;
         }
+        let mut recv3 = TriangleList {
+            triangles: Vec::new(),
+        };
+
+        
+
         if size <= res {
-            process_cube(model, position, size, recv);
-        } else {
-            let s2 = size * 0.5;
-            let o = [-s2, s2];
-            for i in 0..8 {
-                let offset = Vec3::new(o[i & 1], o[(i >> 1) & 1], o[(i >> 2) & 1]);
-                let p = offset + position;
-                marching_cubes_sdf(recv, model, p, s2, res);
+            process_cube(model, position, size, &mut recv3);
+            for tri in recv3.triangles {
+                recv.triangles.push(tri);
+            }
+
+            return false;
+        }
+
+        let s2 = size * 0.5;
+        let o = [-s2, s2];
+        let mut recv2 = TriangleList {
+            triangles: Vec::new(),
+        };
+        for i in 0..8 {
+            let offset = Vec3::new(o[i & 1], o[(i >> 1) & 1], o[(i >> 2) & 1]);
+            let p = offset + position;
+            marching_cubes_sdf(recv, model, p, s2, res, start_size);
+        }
+        let l = recv2.len();
+        if l > 2 {
+            let triangle0 = recv2.triangles[0];
+            let a = triangle0[0];
+            let b = triangle0[1];
+            let c = triangle0[2];
+            if false && are_points_on_same_plane(a, b, c, recv2.triangles.iter().flatten(), res * 0.1) {
+                for tri in recv3.triangles {
+                    recv.triangles.push(tri);
+                }
+
+                return true;
             }
         }
+
+        //for tri in recv2.triangles {
+        //    recv.triangles.push(tri);
+        //}
     }
+    return false;
 }
 
-fn cubify_get_faces<T1: DistanceField, T: MarchingCubesReciever>(recv: &mut T, model: &T1,pt: Vec3,
-    size: f32){
-            let mut cubeindex = 0;
+fn are_points_on_same_plane<'a, I>(a: Vec3, b: Vec3, c: Vec3, points: I, tolerance: f32) -> bool
+where
+    I: IntoIterator<Item = &'a Vec3>,
+{
+    let p0 = a;
+    let v1 = b - a;
+    let v2 = c - a;
+    let normal = v1.cross(v2);
+
+    for point in points {
+        let v = Vec3 {
+            x: point.x - p0.x,
+            y: point.y - p0.y,
+            z: point.z - p0.z,
+        };
+
+        if v.dot(normal).abs() > tolerance {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn cubify_get_faces<T1: DistanceField, T: MarchingCubesReciever>(
+    recv: &mut T,
+    model: &T1,
+    pt: Vec3,
+    size: f32,
+) {
+    let mut cubeindex = 0;
 
     let isolevel = 0.0;
 
@@ -274,27 +553,30 @@ fn cubify_get_faces<T1: DistanceField, T: MarchingCubesReciever>(recv: &mut T, m
         ds[i] = d;
     }
     let faces = [
-        [0,1,2,3], 
-        [4,6,5,7],
-        [0,2,4,6],
-        [1,5,3,7],
-        [2,6,3,7],
-        [0,1,4,5]
-        ];
+        [0, 1, 2, 3],
+        [4, 6, 5, 7],
+        [0, 2, 4, 6],
+        [1, 5, 3, 7],
+        [2, 6, 3, 7],
+        [0, 1, 4, 5],
+    ];
     // face 0: var x,y fixed z.
     for item in faces.into_iter() {
         if item.iter().all(|x| ds[*x] < -0.1) {
             continue;
         }
         recv.receive(pts[item[0]], pts[item[1]], pts[item[2]]);
-        recv.receive(pts[item[1]], pts[item[3]], pts[item[2]]);   
+        recv.receive(pts[item[1]], pts[item[3]], pts[item[2]]);
     }
 }
 
-pub fn cubify<T1: DistanceField, T: MarchingCubesReciever>(recv: &mut T, model: &T1,position: Vec3,
+pub fn cubify<T1: DistanceField, T: MarchingCubesReciever>(
+    recv: &mut T,
+    model: &T1,
+    position: Vec3,
     size: f32,
-    res: f32) {
-    
+    res: f32,
+) {
     let d = model.distance(position);
     if d < size * SQRT_3 {
         if d < -size * SQRT_3 {
@@ -314,3 +596,21 @@ pub fn cubify<T1: DistanceField, T: MarchingCubesReciever>(recv: &mut T, model: 
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_triangle_area() {
+        let a = Triangles {
+            triangles: vec![[0, 1, 2]],
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+        };
+        let s = a.triangle_size(0).unwrap();
+        println!("s: {}", s);
+    }
+}

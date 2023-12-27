@@ -81,6 +81,11 @@ impl Vec3 {
     pub fn interpolate(&self, other: Self, t:f32) -> Self{
         (1.0 - t) * self + other * t
     }
+
+    pub fn round(&self, multiplier : f32) -> Self{
+        self.map(|x| (x * multiplier).round() / multiplier)
+    }
+
 }
 
 impl<'a> Sum<&'a Vec3> for Vec3 {
@@ -315,4 +320,16 @@ mod tests {
         let dot_product = a.dot(b);
         assert_eq!(dot_product, 32.0);
     }
+
+    #[test]
+    fn round_test() {
+        let a = Vec3::new(1.1, 1.01, 1.001);
+        let b = a.round(1000.0);
+        assert!(a.eq(&b));
+        let a = Vec3::new(1.1, 1.01, 1.001);
+        let b = a.round(100.0);
+        assert!(!a.eq(&b));
+    }
+
+    
 }

@@ -1,9 +1,12 @@
-use std::{collections::{HashSet, HashMap}, f32::consts::SQRT_2};
+use std::collections::{HashMap, HashSet};
 
 use crate::{sdf, vec3::Vec3};
 use sdf::*;
 
-use kiss3d::{nalgebra::{Point3, Matrix4}, camera::{Camera, ArcBall, FirstPerson}};
+use kiss3d::{
+    camera::{ArcBall, Camera, FirstPerson},
+    nalgebra::{Matrix4, Point3},
+};
 
 type Vec3f = Vec3;
 
@@ -15,53 +18,50 @@ pub struct SdfKey {
     pub w: i32,
 }
 
-fn is_in_frustum(cam: &Matrix4<f32>, pos : Vec3, size : f32) -> bool{
- 
+fn is_in_frustum(cam: &Matrix4<f32>, pos: Vec3, size: f32) -> bool {
     let mut min = Vec3::new(0.0, 0.0, 0.0);
     let mut max = min;
     let mut first = true;
     for i in 0..8 {
-       let x = i & 1;
-       let y = (i >> 1) & 1;
-       let z = (i >> 2) & 1;
-       let v = pos + Vec3::new(x as f32 - 0.5,y as f32 - 0.5,z as f32 - 0.5) * size;
-       let v2 : Point3<f32> = v.into();
-       let v3 = cam * v2.to_homogeneous();
-       let v4 = Point3::from_homogeneous(v3);
-       if let None = v4 {
-          continue;
-       }
-       let v: Vec3 = v4.unwrap().into();
+        let x = i & 1;
+        let y = (i >> 1) & 1;
+        let z = (i >> 2) & 1;
+        let v = pos + Vec3::new(x as f32 - 0.5, y as f32 - 0.5, z as f32 - 0.5) * size;
+        let v2: Point3<f32> = v.into();
+        let v3 = cam * v2.to_homogeneous();
+        let v4 = Point3::from_homogeneous(v3);
+        if let None = v4 {
+            continue;
+        }
+        let v: Vec3 = v4.unwrap().into();
 
-       if first {
-          first = false;
-          min = v.into();
-          max = min;
-       }else{
-          min = min.min(v.into());
-          max = max.max(v.into());
-       }
+        if first {
+            first = false;
+            min = v.into();
+            max = min;
+        } else {
+            min = min.min(v.into());
+            max = max.max(v.into());
+        }
     }
-  
-    if min.x > 1.0 || max.x < -1.0 {
-         return false;
+
+    if min.x > 1.001 || max.x < -1.001 {
+        return false;
     }
-    if min.y > 1.0 || max.y < -1.0 {
-         return false;
+    if min.y > 1.001 || max.y < -1.001 {
+        return false;
     }
-    if min.z > 1.0 || max.z < -1.0 {
-       return false;
+    if min.z > 1.001 || max.z < -1.001 {
+        return false;
     }
-  
+
     return true;
-  }
+}
 
-
-
-pub enum CameraEnum{
+pub enum CameraEnum {
     ArcBall(ArcBall),
     FirstPerson(FirstPerson),
-    None
+    None,
 }
 
 impl Into<CameraEnum> for &FirstPerson {
@@ -76,63 +76,68 @@ impl Into<CameraEnum> for &ArcBall {
     }
 }
 
-fn box_is_occluded(eye: Vec3, p: Vec3, size: f32, sdf: &DistanceFieldEnum) -> bool 
-{
-    
-        let d0 = sdf.distance(eye);
-        
-        let dir = (p - eye).normalize();
-        if(size > 2.0) {
-            let mut it = eye + dir * d0;
-            for _ in 0..16 {
-                let d = sdf.distance(it) + size * 0.5;
-                if(d > 1000.0){
-                    break;
-                }
-                let deye = (it - p).length();
-                if(d < 0.01 * size && deye > size * SQRT3 * 3.0){
-                    return true;
-                }
-                if d < 0.01 * size && deye - size < d {
-                    return false;
-                }
-                it = it + dir * d;
+pub fn box_is_occluded(eye: Vec3, p: Vec3, size: f32, sdf: &DistanceFieldEnum) -> bool {
+    let d0 = sdf.distance(eye);
 
-            }
+    let dir = (p - eye).normalize();
+    let target = (p - (dir * size));
+
+    
+    let mut it = eye + dir * d0;
+    for _ in 0..128 {
+        let d = sdf.distance(it) + size;
+        if d > 1000.0 {
+            return false;
         }
-        return false;
+        if (it - target).dot(dir) > 0.01 {
+            return false;
+        }
+        
+        if (it - target).length() < size * SQRT3 {
+            return false;
+        }
+        if d < size * 0.05 {
+            return true;
+        }
+        it = it + dir * d;
+    }
+    println!("...? {}   {}", it, (it - target).length());
+   
+    return false;
 }
 
 pub struct SdfScene {
-    pub  sdf: DistanceFieldEnum,
+    pub sdf: DistanceFieldEnum,
     pub eye_pos: Vec3f,
     pub block_size: f32,
     pub render_blocks: Vec<(Vec3f, f32, SdfKey, DistanceFieldEnum, f32)>,
     pub cam: Matrix4<f32>,
     cache: HashSet<DistanceFieldEnum>,
-    map : HashMap<SdfKey, DistanceFieldEnum>
+    map: HashMap<SdfKey, DistanceFieldEnum>,
 }
 
 const SQRT3: f32 = 1.73205080757;
 impl SdfScene {
-
-    pub fn new(sdf : DistanceFieldEnum) -> SdfScene {
-        SdfScene { sdf: sdf, eye_pos: Vec3::zeros(), 
-            block_size: 2.0, 
+    pub fn new(sdf: DistanceFieldEnum) -> SdfScene {
+        SdfScene {
+            sdf: sdf,
+            eye_pos: Vec3::zeros(),
+            block_size: 2.0,
             render_blocks: Vec::new(),
-            cam : FirstPerson::new(Point3::new(0.0, 0.0, -5.0), Point3::new(0.0, 0.0, 0.0)).transformation(),
+            cam: FirstPerson::new(Point3::new(0.0, 0.0, -5.0), Point3::new(0.0, 0.0, 0.0))
+                .transformation(),
             cache: HashSet::new(),
-            map: HashMap::new()
-         }
-    } 
+            map: HashMap::new(),
+        }
+    }
 
-    pub fn with_eye_pos(mut self, v: Vec3f) -> SdfScene{
+    pub fn with_eye_pos(mut self, v: Vec3f) -> SdfScene {
         self.eye_pos = v;
         return self;
     }
 
     //pub fn with_eye_dir(mut self, dir: Vec3f) -> SdfScene {
-        
+
     //}
 
     fn callback(
@@ -142,19 +147,20 @@ impl SdfScene {
         size: f32,
         sdf: &DistanceFieldEnum,
         _block_size: f32,
-        scale: f32
+        scale: f32,
     ) {
         self.render_blocks.push((p, size, key, sdf.clone(), scale));
     }
 
     fn skip_block(&self, p: Vec3, size: f32) -> bool {
-        return self.skip_block2(p, size)
+        return self.skip_block2(p, size);
     }
 
     fn skip_block2(&self, p: Vec3, size: f32) -> bool {
-        if(!is_in_frustum(&self.cam, p, size * 2.0)){
-            return false;
+        if !is_in_frustum(&self.cam, p, size * 2.0) {
+            return true;
         }
+
         let eye = self.eye_pos;
         let occluded = box_is_occluded(eye, p, size, &self.sdf);
         if occluded {
@@ -169,47 +175,46 @@ impl SdfScene {
         self.iterate_scene_rec(p, size, true)
     }
 
-    // The `iterate_scene_rec` function is a recursive function that works by dividing the scene into cells, and for each cell, it checks 
+    // The `iterate_scene_rec` function is a recursive function that works by dividing the scene into cells, and for each cell, it checks
     // if it's close enough to the scene, or if it's too small or not, and if so, it skips the current cell. If the cell is relevant, it will
     // divide it into eight smaller cells and repeat the process.
-    fn iterate_scene_rec(&mut self, cell_position: Vec3, cell_size: f32, update : bool) {
-    
+    fn iterate_scene_rec(&mut self, cell_position: Vec3, cell_size: f32, update: bool) {
         let key = SdfKey {
             x: cell_position.x as i32,
             y: cell_position.y as i32,
             z: cell_position.z as i32,
             w: cell_size as i32,
         };
-        
+
         let key_exists = self.map.contains_key(&key);
         let mut update2 = !key_exists;
-        let (d, omodel) = 
-            if !update && key_exists {
-                let map = self.map[&key].clone();
-                (map.distance(cell_position), map)
-            }else{
-             // Calculate the SDF distance and check if optimizations can be made for the sdf in a local scope.
-           //let (d, omodel) = (self.sdf.distance(cell_position), self.sdf.clone());
-            
-             let r = self.sdf.distance_and_optimize(cell_position, cell_size, &mut self.cache);
-             if update && key_exists {
+        let (d, omodel) = if !update && key_exists {
+            let map = self.map[&key].clone();
+            (map.distance(cell_position), map)
+        } else {
+            // Calculate the SDF distance and check if optimizations can be made for the sdf in a local scope.
+            //let (d, omodel) = (self.sdf.distance(cell_position), self.sdf.clone());
+
+            let r = self
+                .sdf
+                .distance_and_optimize(cell_position, cell_size, &mut self.cache);
+            if update && key_exists {
                 let current_map = self.map.get(&key).unwrap();
                 if false == current_map.eq(&r.1) {
                     update2 = true;
                     self.map.insert(key, r.1.clone());
                     println!("updated map at: {:?}", key);
                 }
-
-             }else{
+            } else {
                 self.map.insert(key, r.1.clone());
                 println!("updated map at: {:?}", key);
-             }
-             r
-            };
+            }
+            r
+        };
         if d > cell_size * SQRT3 {
             return;
         }
-        
+
         if d < -cell_size * SQRT3 {
             return;
         }
@@ -218,26 +223,38 @@ impl SdfScene {
             return;
         }
 
-        // future frustum culling.
+        // frustum culling, occlusion culling, etc...
         if self.skip_block(cell_position, cell_size) {
             return;
         }
 
         // Calculate the distance of the cell from the eye position
         let cell_distance = (cell_position - self.eye_pos).length();
-        
+
         // Calculate the LOD level based on the distance of the cell.
-        let lod_level = (0.05 * cell_distance / self.block_size).log2().floor().max(0.0);
-        
+        let lod_level = (0.05 * cell_distance / self.block_size)
+            .log2()
+            .floor()
+            .max(0.0);
+
         // Calculate the cell size. Farther away -> bigger blocks with lower resolution.
         let lod_cell_size = self.block_size * 2.0_f32.powf(lod_level);
 
         // if the size of the current cell is less than the lod cell size
         if cell_size <= lod_cell_size {
-            
-            let omodel2 = self.sdf.distance_and_optimize(cell_position, cell_size, &mut self.cache).1;
-            self.callback(key, cell_position, cell_size, &omodel2, cell_size, lod_level);
-            
+            let omodel2 = self
+                .sdf
+                .distance_and_optimize(cell_position, cell_size, &mut self.cache)
+                .1;
+            self.callback(
+                key,
+                cell_position,
+                cell_size,
+                &omodel2,
+                cell_size,
+                lod_level,
+            );
+
             return;
         }
 
@@ -257,7 +274,6 @@ impl SdfScene {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
 
@@ -267,21 +283,19 @@ mod tests {
     fn test_optimize_bounds() {
         let sdf = build_test();
         let sdf2 = sdf.optimize_bounds();
-    
+
         let mut sdf_iterator = SdfScene::new(sdf2);
-        
 
         sdf_iterator.iterate_scene(Vec3::new(0.0, 0.0, 0.0), 2.0 * 512.0);
         println!("Count: {}", sdf_iterator.render_blocks.len());
         for block in sdf_iterator.render_blocks {
             //println!("{:?}", block.2);
-            
         }
     }
 
     #[test]
-    fn test_progressive_holes(){
-        let mut sdf : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 100.0).into();
+    fn test_progressive_holes() {
+        let mut sdf: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 100.0).into();
         let mut prev = sdf.clone();
         for i in 0..50 {
             let start = Vec3::new(0.0, 0.0, 110.0);
@@ -291,7 +305,7 @@ mod tests {
             let newobj = Sphere::new(r.1, 2.0);
             let sub = Subtract::new(sdf.clone(), newobj, 0.5);
             sdf = sub.into();
-            let r = sdf.optimized_for_block(Vec3::new(0.0, 0.0, 95.0),2.0, &mut HashSet::new());
+            let r = sdf.optimized_for_block(Vec3::new(0.0, 0.0, 95.0), 2.0, &mut HashSet::new());
             sdf = sdf.optimize_bounds();
             println!("{}", r);
             if i > 30 {
@@ -301,36 +315,74 @@ mod tests {
         }
     }
     #[test]
-    fn test_occlusion(){
+    fn test_occlusion() {
+        let s1: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 100.0).into();
+        let s2: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 120.0), 10.0).into();
+        let a1: DistanceFieldEnum = Add::new(s1, s2).into();
 
-    
-
-        let s1 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 100.0).into();
-        let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 120.0), 10.0).into();
-        let a1 : DistanceFieldEnum = Add::new(s1,s2).into();
-
-        let occluded = box_is_occluded(Vec3::new(0.0, 0.0, -110.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        let occluded = box_is_occluded(
+            Vec3::new(0.0, 0.0, -110.0),
+            Vec3::new(0.0, 0.0, 120.0),
+            10.0,
+            &a1,
+        );
         assert!(occluded);
-        let occluded2 = box_is_occluded(Vec3::new(0.0, 0.0, 110.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        let occluded2 = box_is_occluded(
+            Vec3::new(0.0, 0.0, 110.0),
+            Vec3::new(0.0, 0.0, 120.0),
+            10.0,
+            &a1,
+        );
         assert!(!occluded2);
 
-        let occluded3 = box_is_occluded(Vec3::new(10.0, 10.0, -110.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        let occluded3 = box_is_occluded(
+            Vec3::new(10.0, 10.0, -110.0),
+            Vec3::new(0.0, 0.0, 120.0),
+            10.0,
+            &a1,
+        );
         assert!(occluded3);
-        let occluded4 = box_is_occluded(Vec3::new(0.0, 0.0, -95.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        let occluded4 = box_is_occluded(
+            Vec3::new(0.0, 0.0, -95.0),
+            Vec3::new(0.0, 0.0, 120.0),
+            10.0,
+            &a1,
+        );
         assert!(occluded4);
-        let occluded5 = box_is_occluded(Vec3::new(0.0, 0.0, 95.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        let occluded5 = box_is_occluded(
+            Vec3::new(0.0, 0.0, 95.0),
+            Vec3::new(0.0, 0.0, 120.0),
+            10.0,
+            &a1,
+        );
         assert!(occluded5);
-        let occluded5 = box_is_occluded(Vec3::new(0.0, 95.0, -50.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        let occluded5 = box_is_occluded(
+            Vec3::new(0.0, 95.0, -50.0),
+            Vec3::new(0.0, 0.0, 120.0),
+            10.0,
+            &a1,
+        );
         assert!(occluded5);
-        let occluded5 = box_is_occluded(Vec3::new(0.0, 95.0, 50.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        let occluded5 = box_is_occluded(
+            Vec3::new(0.0, 95.0, 50.0),
+            Vec3::new(0.0, 0.0, 120.0),
+            10.0,
+            &a1,
+        );
         assert!(!occluded5);
-        let occluded5 = box_is_occluded(Vec3::new(0.0, 100.0, -45.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        let occluded5 = box_is_occluded(
+            Vec3::new(0.0, 100.0, -45.0),
+            Vec3::new(0.0, 0.0, 120.0),
+            10.0,
+            &a1,
+        );
         assert!(occluded5);
-        let occluded5 = box_is_occluded(Vec3::new(0.0, 100.0, 45.0), Vec3::new(0.0, 0.0, 120.0), 10.0, &a1 );
+        let occluded5 = box_is_occluded(
+            Vec3::new(0.0, 100.0, 45.0),
+            Vec3::new(0.0, 0.0, 120.0),
+            10.0,
+            &a1,
+        );
         assert!(!occluded5);
-        
     }
-
-
-
 }
