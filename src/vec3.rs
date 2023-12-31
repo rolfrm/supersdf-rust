@@ -23,6 +23,11 @@ impl std::cmp::Eq for Vec3 {
 }
 
 impl Vec3 {
+    pub const ZERO : Vec3 = Vec3{x : 0.0, y : 0.0, z : 0.0};
+    pub const ONE : Vec3 = Vec3{x : 1.0, y : 1.0, z : 1.0};
+    pub const HALF : Vec3 = Vec3{x : 0.5, y : 0.5, z : 0.5};
+    pub const NEG_ONE : Vec3 = Vec3{x : -1.0, y : -1.0, z : -1.0};
+
     // Constructor
     pub fn new(x: f32, y: f32, z: f32) -> Self {
         Vec3 { x, y, z }
@@ -47,7 +52,7 @@ impl Vec3 {
         }
     }
 
-    pub fn zeros() -> Vec3 { Vec3::new(0.0, 0.0, 0.0) }
+    pub fn zeros() -> Vec3 { Vec3::ZERO }
 
     pub fn abs(&self) -> Vec3 { self.map(f32::abs) }
 
@@ -85,6 +90,14 @@ impl Vec3 {
     pub fn round(&self, multiplier : f32) -> Self{
         self.map(|x| (x * multiplier).round() / multiplier)
     }
+
+    pub fn apply_to<F : Fn(f32, f32, f32) -> T, T>(&self, f : F) -> T{
+        f(self.x, self.y, self.z)
+    }
+
+    pub fn with_z(&self, v : f32) -> Vec3 {Vec3::new(self.x, self.y, v) }
+    pub fn with_y(&self, v : f32) -> Vec3 {Vec3::new(self.x, v, self.z) }
+    pub fn with_x(&self, v : f32) -> Vec3 {Vec3::new(v, self.y, self.z) }
 
 }
 
@@ -236,7 +249,7 @@ impl Into<Vec3> for Vector3<f32>{
 
 impl Into<Vector3<f32>> for Vec3{
     fn into(self) -> Vector3<f32> {
-        Vector3::new(self.x, self.y, self.z)
+        self.apply_to(Vector3::new)
     }
 }
 impl Into<Point3<f32>> for Vec3{

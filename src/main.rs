@@ -20,11 +20,31 @@ use kiss3d::window::{Window};
 
 fn main() {
     
-    let s1 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 50.0, 50.0), 50.0).into();
-    let s1 = s1.colored(Color::rgba(0.0,0.0,1.0, 1.0));
-    let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 55.0, 00.0), 10.0).into();
+    let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 10.0).into();
     let s2 = s2.colored(Color::rgb(1.0,0.0,0.0));
-    let a1 : DistanceFieldEnum = Add::new(s1,s2).into();
+    let a1 = s2;
+    
+    let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(50.0, 0.0, 00.0), 10.0).into();
+    let s2 = s2.colored(Color::rgb(0.0,1.0,0.0));
+    let a1 : DistanceFieldEnum = Add::new(a1,s2).into();
+
+    let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 50.0), 10.0).into();
+    let s2 = s2.colored(Color::rgb(0.0,1.0,1.0));
+    let a1 : DistanceFieldEnum = Add::new(a1,s2).into();
+
+    let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 50.0, 00.0), 10.0).into();
+    let s2 = s2.colored(Color::rgb(1.0,1.0,0.0));
+    let a1 : DistanceFieldEnum = Add::new(a1,s2).into();
+
+    let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, -50.0, 00.0), 10.0).into();
+    let s2 = s2.colored(Color::rgb(1.0,0.0,1.0));
+    let a1 : DistanceFieldEnum = Add::new(a1,s2).into();
+
+
+    let sub = Vec3::new(12.840058, 74.62816, 8.423447);
+    let a1 = a1.subtract(DistanceFieldEnum::sphere(sub, 2.0));
+
+
 
     let sdf = a1.optimize_bounds();
     println!("Final sdf: {:?}", sdf);

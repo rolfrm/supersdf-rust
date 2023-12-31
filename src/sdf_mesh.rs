@@ -330,7 +330,8 @@ impl TriangleList {
         let fw = 1.0 / (columns as f64);
         let fh = 1.0 / (rows as f64);
 
-        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(128, 128);
+        let mut buf: ImageBuffer<Rgba<u8>, Vec<u8>> = RgbaImage::new(512, 512);
+
         let pxmargin = 3;
         let uvmargin = (1.0 + rows as f64) * (pxmargin as f64) / (buf.width() as f64);
         let bufsize = Vec2::new(buf.width() as f32, buf.height() as f32);
@@ -360,7 +361,7 @@ impl TriangleList {
             let col = (facei % columns) as f64;
             let rowf = row / (columns as f64);
             let colf = col / (columns as f64);
-            let normal = sdf.gradient(*v, 0.01);
+            let normal = sdf.gradient(*v, 0.03);
             normals.push(normal);
 
             let uv = Vec2::new(
@@ -383,11 +384,7 @@ impl TriangleList {
             faceit += 1;
             if faceit == 3 {
                 faceit = 0;
-                // something is up with these faces!! :(
-                let v0 = face[0];
-                let v1 = face[2];
-                face[0] = v1;
-                face[2] = v0;
+
                 faces.push(face);
 
                 let va: Vec3 = coords[coords.len() - 3].to_homogeneous().xyz().into();
@@ -434,7 +431,7 @@ impl TriangleList {
             Mesh::new(
                 coords,
                 faces,
-                Option::Some(IntoVector3Array(normals)),
+                None,//Option::Some(IntoVector3Array(normals)),
                 Option::Some(IntoVector2Array(uvs)),
                 false,
             ),
@@ -445,6 +442,99 @@ impl TriangleList {
 
 static SQRT_3: f32 = 1.7320508;
 
+pub fn receive_cube(
+    recv: &mut TriangleList,
+    sdf: &DistanceFieldEnum,
+    position: Vec3,
+    size: f32, 
+    cache : &mut HashSet<DistanceFieldEnum>
+) {
+    let p = position - Vec3::new(size, size, size);
+    let s = size * 2.0;
+    let sdf = sdf.optimized_for_block(position, size, cache);
+
+    let mut receive_face = |v1: Vec3, v2: Vec3, v3: Vec3,  v4: Vec3| {
+        let a = sdf.distance(v1);
+        let b = sdf.distance(v2);
+        let c = sdf.distance(v3);
+        let d = sdf.distance(v4);
+        let limit1 = 0.0;
+        let limit2 = s * SQRT_3;
+        if a < limit1 || b < limit1 || c < limit1 || d < limit1 {
+            return;
+        }
+        
+        //if a > limit2 && b > limit2 && c > limit2 && d > limit2{
+        //    return;
+        //}
+        
+        recv.triangles.push([v1, v2, v3]);
+        recv.triangles.push([v3, v2, v4]);
+    };
+
+    // Front face
+    receive_face(p, p + Vec3::new(0.0, s, 0.0), p + Vec3::new(s, 0.0, 0.0), p + Vec3::new(s, s, 0.0));
+    {
+        // back face.
+        let p = p.with_z(p.z + s);
+        receive_face(p, p + Vec3::new(s, 0.0, 0.0), p + Vec3::new(0.0, s, 0.0), p + Vec3::new(s, s, 0.0));
+    }
+    
+    // left face
+    receive_face(p, p + Vec3::new(0.0, 0.0, s), p + Vec3::new(0.0, s, 0.0), p + Vec3::new(0.0, s, s));
+    // right face
+    {
+        let p = p.with_x(p.x + s);
+        receive_face(p, p + Vec3::new(0.0, s, 0.0), p + Vec3::new(0.0, 0.0, s), p + Vec3::new(0.0, s, s));
+    
+    }
+
+    // bottom face
+    receive_face(p, p + Vec3::new(s, 0.0, 0.0), p + Vec3::new(0.0, 0.0 ,s), p + Vec3::new(s, 0.0, s));
+    // right face
+    {
+        let p = p.with_y(p.y + s);
+        receive_face(p, p + Vec3::new(0.0, 0.0, s), p + Vec3::new(s, 0.0, 0.0), p + Vec3::new(s, 0.0, s));
+    
+    }
+
+    
+   
+}
+pub fn marching_voxels(
+    recv: &mut TriangleList,
+    model: &DistanceFieldEnum,
+    position: Vec3,
+    size: f32,
+    res: f32,
+    start_size: f32, 
+    cache : &mut HashSet<DistanceFieldEnum>
+) {
+    let d = model.distance(position);
+    // check if the surface collides with a sphere that can include the cube we want to draw.
+    if d < size * SQRT_3 {
+    
+        // If the entire sphere is inside the object, we can skip it.
+        
+        if d < -size * SQRT_3 {
+            return;
+        }
+
+        if size <= res {
+            receive_cube(recv, model, position, size, cache);
+            return;
+        }
+
+        let s2 = size * 0.5;
+        let o = [-s2, s2];
+
+        for i in 0..8 {
+            let offset = Vec3::new(o[i & 1], o[(i >> 1) & 1], o[(i >> 2) & 1]);
+            let p = offset + position;
+            marching_voxels(recv, model, p, s2, res, start_size, cache);
+        }
+    }
+}
 pub fn marching_cubes_sdf<T1: DistanceField>(
     recv: &mut TriangleList,
     model: &T1,
@@ -452,57 +542,27 @@ pub fn marching_cubes_sdf<T1: DistanceField>(
     size: f32,
     res: f32,
     start_size: f32,
-) -> bool {
+) {
     let d = model.distance(position);
-    if d < size * SQRT_3 {
+    if d < size * SQRT_3  {
         if d < -size * SQRT_3 {
-            return false;
+            return;
         }
-        let mut recv3 = TriangleList {
-            triangles: Vec::new(),
-        };
-
-        
 
         if size <= res {
-            process_cube(model, position, size, &mut recv3);
-            for tri in recv3.triangles {
-                recv.triangles.push(tri);
-            }
-
-            return false;
+            process_cube(model, position, size, recv);
+            return;
         }
 
         let s2 = size * 0.5;
         let o = [-s2, s2];
-        let mut recv2 = TriangleList {
-            triangles: Vec::new(),
-        };
+
         for i in 0..8 {
             let offset = Vec3::new(o[i & 1], o[(i >> 1) & 1], o[(i >> 2) & 1]);
             let p = offset + position;
             marching_cubes_sdf(recv, model, p, s2, res, start_size);
         }
-        let l = recv2.len();
-        if l > 2 {
-            let triangle0 = recv2.triangles[0];
-            let a = triangle0[0];
-            let b = triangle0[1];
-            let c = triangle0[2];
-            if false && are_points_on_same_plane(a, b, c, recv2.triangles.iter().flatten(), res * 0.1) {
-                for tri in recv3.triangles {
-                    recv.triangles.push(tri);
-                }
-
-                return true;
-            }
-        }
-
-        //for tri in recv2.triangles {
-        //    recv.triangles.push(tri);
-        //}
     }
-    return false;
 }
 
 fn are_points_on_same_plane<'a, I>(a: Vec3, b: Vec3, c: Vec3, points: I, tolerance: f32) -> bool

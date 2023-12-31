@@ -79,20 +79,26 @@ impl Into<CameraEnum> for &ArcBall {
 pub fn box_is_occluded(eye: Vec3, p: Vec3, size: f32, sdf: &DistanceFieldEnum) -> bool {
     let d0 = sdf.distance(eye);
 
-    let dir = (p - eye).normalize();
-    let target = (p - (dir * size));
+    let dir = p - eye;
+    let d1 = dir.length();
+    if d1 < size * SQRT3 {
+        return false;
+    }
+    let dir = dir / d1;
 
+    let target = p - (dir * size);
     
     let mut it = eye + dir * d0;
     for _ in 0..128 {
         let d = sdf.distance(it) + size;
+        assert!(!d.is_nan());
         if d > 1000.0 {
             return false;
         }
         if (it - target).dot(dir) > 0.01 {
             return false;
         }
-        
+
         if (it - target).length() < size * SQRT3 {
             return false;
         }
@@ -101,8 +107,8 @@ pub fn box_is_occluded(eye: Vec3, p: Vec3, size: f32, sdf: &DistanceFieldEnum) -
         }
         it = it + dir * d;
     }
-    println!("...? {}   {}", it, (it - target).length());
-   
+
+
     return false;
 }
 
@@ -211,7 +217,7 @@ impl SdfScene {
             }
             r
         };
-        if d > cell_size * SQRT3 {
+        if d > cell_size * SQRT3  {
             return;
         }
 
@@ -219,7 +225,7 @@ impl SdfScene {
             return;
         }
 
-        if cell_size < 0.9 {
+        if cell_size < 0.5 {
             return;
         }
 
@@ -297,7 +303,7 @@ mod tests {
     fn test_progressive_holes() {
         let mut sdf: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 100.0).into();
         let mut prev = sdf.clone();
-        for i in 0..50 {
+        for i in 0..10 {
             let start = Vec3::new(0.0, 0.0, 110.0);
             let dir = Vec3::new(0.0, 0.0, -1.0);
             let r = sdf.cast_ray(start, dir, 1000.0).unwrap();

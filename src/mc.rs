@@ -336,7 +336,7 @@ pub fn process_cube<T: sdf::DistanceField, T2: MarchingCubesReciever>(
         points[i2] = offset2 + pt;
 
         let d = model.distance(p2);
-        if d > 0.0 {
+        if d >= 0.0 {
             cubeindex |= cell_index;
         }
         ds[i2] = d;
@@ -392,7 +392,7 @@ pub fn process_cube<T: sdf::DistanceField, T2: MarchingCubesReciever>(
         let p2 = vertlist[usize::try_from(TRITABLE[cubeindex][i + 1]).unwrap()];
         let p3 = vertlist[usize::try_from(TRITABLE[cubeindex][i + 2]).unwrap()];
 
-        f.receive(p1, p2, p3);
+        f.receive(p1, p3, p2);
         i += 3;
     }
     return 0;

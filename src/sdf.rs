@@ -6,6 +6,7 @@ use rand::seq::SliceRandom;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, HashMap};
 use std::env::JoinPathsError;
+use std::f32::consts::SQRT_2;
 use std::fmt::Display;
 use std::{fmt, io};
 use std::hash::{Hash, Hasher};
@@ -328,6 +329,10 @@ impl Add {
         Add::from_rc(Rc::new(left), Rc::new(right))
     }
 
+    pub fn new2(left: DistanceFieldEnum, right: DistanceFieldEnum) -> DistanceFieldEnum {
+        DistanceFieldEnum::Add(Add::from_rc(Rc::new(left), Rc::new(right)))
+    }
+
     fn from_rc(left: Rc<DistanceFieldEnum> , right: Rc<DistanceFieldEnum>) -> Add {
         let size = left.size() + right.size() + 1;
 
@@ -429,10 +434,23 @@ impl Into<DistanceFieldEnum> for Subtract {
         DistanceFieldEnum::Subtract(self)
     }
 }
+
 impl DistanceFieldEnum {
 
     pub fn colored(&self, color: Color) -> DistanceFieldEnum {
         DistanceFieldEnum::Coloring(Coloring::SolidColor(color), Rc::new(self.clone()))
+    }
+
+    pub fn sphere(pos : Vec3, radius : f32) -> DistanceFieldEnum {
+        Sphere::new(pos, radius).into()
+    }
+
+    pub fn add(&self, sdf : DistanceFieldEnum) -> DistanceFieldEnum {
+        DistanceFieldEnum::Add(Add::new(self.clone(), sdf.clone()))
+    }
+
+    pub fn subtract(&self, sdf : DistanceFieldEnum) -> DistanceFieldEnum {
+        DistanceFieldEnum::Subtract(Subtract::new(self.clone(), sdf, 0.5))
     }
 
     pub fn cast_ray(&self, pos: Vec3, dir: Vec3, max_dist: f32) -> Option<(f32, Vec3)> {
@@ -460,16 +478,16 @@ impl DistanceFieldEnum {
         
         let left_d = d1;
         let right_d = right_opt.distance(block_center);
-        if left_d > right_d + size * SQRT3 {
+        if left_d > right_d + size * SQRT3 * SQRT_2{
             return right_opt;
         }
-        if right_d > left_d + size * SQRT3{
+        if right_d > left_d + size * SQRT3 * SQRT_2{
             return left_opt;
         }
-        if f32::min(right_d, left_d) > min_d + size * SQRT3 * 2.0 {
+        if f32::min(right_d, left_d) > min_d + size * SQRT3 * 2.0  {
             return DistanceFieldEnum::Empty{}.into();
         }
-        if f32::min(right_d, left_d) > size * SQRT3 * 2.0 * 1.5 {
+        if f32::min(right_d, left_d) > size * SQRT3 * 2.0 * 1.5  {
             if right_d < left_d {
                 return right_opt;
             }
@@ -640,7 +658,6 @@ impl DistanceFieldEnum {
                         let right_bounds = inner_add.right.calculate_sphere_bounds();
                         if !left_bounds.overlaps(&subbounds) {
                             if !right_bounds.overlaps(&subbounds) {
-                                //println!("none overlaps! {:?} {:?} {:?} {}", left_bounds, right_bounds, subbounds, (right_bounds.center - subbounds.center).length());
                                 // neither bounds overlaps the subtraction -> just delete it.
                                 DistanceFieldEnum::Add(inner_add.clone())
                             }else {
@@ -666,6 +683,8 @@ impl DistanceFieldEnum {
                             .optimize_bounds();
                         new_left = Subtract::new(sub3.left.as_ref().clone(), comb, sub3.k).into();
                     }
+                }else {
+                    new_left = new_left.subtract(sub.subtract.as_ref().clone());
                 }
 
                 new_left
@@ -1066,6 +1085,7 @@ impl fmt::Display for DistanceFieldEnum{
 mod tests {
     use std::collections::{HashMap, HashSet};
 
+    use kiss3d::nalgebra::ComplexField;
     use rand::{rngs::{ThreadRng, StdRng}, SeedableRng};
 
     use super::*;
@@ -1142,14 +1162,14 @@ mod tests {
             }   
         }
     }
-    #[test]
+    //#[test]
     fn test_build_big_optimize2(){
         let sdf = build_big(4);
         let sdfopt = sdf.optimize_bounds();
         
         let bounds =  sdf.calculate_sphere_bounds();
         let mut rng = thread_rng();
-        for _ in 0..10000 {
+        for _ in 0..10 {
             let size = rng.gen_range(1.0..10.0);
             let halfsize = size * 0.5;
             let d = Vec3::new(rng.gen_range(0.0..12.0), rng.gen_range(0.0..12.0),rng.gen_range(0.0..12.0));
@@ -1257,10 +1277,25 @@ mod tests {
 
     #[test]
     fn test_super_gradient(){
-        let sdf = build_big(40);
+        let s1 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 10.0).into();
+        let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 50.0, 0.0), 10.0).into();
+        let a1 : DistanceFieldEnum = Add::new(s1,s2).into();
+        
+        let g = a1.gradient(Vec3::new(-20.0, 50.0, 0.0), 0.1);
+        fn f32_eq(a : f32, b: f32) -> bool {
+            (a - b).abs() < 0.0001
+        }
+        fn vec3_eq(a : Vec3, b : Vec3) -> bool {
+            f32_eq(a.x, b.x) && f32_eq(a.y, b.y) && f32_eq(a.z, b.z)
+        }
+        assert!(f32_eq(1.0, g.length()));
+        assert!(vec3_eq(g, Vec3::new(-1.0, 0.0, 0.0)));
 
-        let g = sdf.gradient(Vec3::new(-1.0, 0.0, 0.0), 0.1);
-        println!("g: {}", g);
+        let g = a1.gradient(Vec3::new(20.0, 50.0, 0.0), 0.1);
+        assert!(vec3_eq(g, Vec3::new(1.0, 0.0, 0.0)));
+        let g = a1.gradient(Vec3::new(0.0, 50.0, 20.0), 0.1);
+        assert!(vec3_eq(g, Vec3::new(0.0, 0.0, 1.0)));
+        
     }
 
     #[test]
@@ -1270,8 +1305,40 @@ mod tests {
         println!("g: {}", sdf);
     }
 
+    #[test]
+    fn optimize_bounds_bug1(){
+        //(subtract ((color: [(0 0 1 1)] (Sphere (0, 50, 50) 50))
+ //(color: [(1 0 0 1)] (Sphere (0, 55, 0) 10))
+// ) (Sphere (9.092156, 59.161907, 0.119892195) 2))
 
+    let sphere1 = DistanceFieldEnum::sphere(Vec3::new(0.0, 50.0, 50.0), 50.0);
+    let sphere2 = DistanceFieldEnum::sphere(Vec3::new(0.0, 55.0, 0.0), 10.0);
+    let subcenter = Vec3::new(9.092156, 59.161907, 0.119892195);
+    let subsphere = DistanceFieldEnum::sphere(subcenter, 2.0);
+    
+    let sdf = sphere1.add(sphere2).subtract(subsphere);
+    let d1 = sdf.distance(subcenter);
+    let sdf2 = sdf.optimize_bounds();
+    let d2 = sdf2.distance(subcenter);
 
+    println!("sdf2: {}   {}",  d1, d2);
+    assert!((d1 - d2) < 0.001);
+
+    }
+
+    #[test]
+    fn test_distance_bug1(){
+        let s1 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 50.0, 50.0), 50.0).into();
+        let s2 : DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 55.0, 00.0), 10.0).into();
+        let a1 : DistanceFieldEnum = Add::new(s1,s2).into();
+        let sub = Vec3::new(12.840058, 74.62816, 8.423447);
+        let a1 = a1.subtract(DistanceFieldEnum::sphere(sub, 2.0)).optimize_bounds();
+        let d = a1.distance(Vec3::new(11.473644, 60.98243, 19.648586));
+        println!("?? {}  {}", d, a1);
+        assert!(!d.is_nan());
+
+ 
+    }
 
 
 }
