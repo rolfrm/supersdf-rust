@@ -5,10 +5,9 @@ use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, HashMap};
-use std::env::JoinPathsError;
 use std::f32::consts::SQRT_2;
 use std::fmt::Display;
-use std::{fmt, io};
+use std::fmt;
 use std::hash::{Hash, Hasher};
 //, Simplex, SuperSimplex};
 use std::rc::Rc;
@@ -1085,8 +1084,7 @@ impl fmt::Display for DistanceFieldEnum{
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use kiss3d::nalgebra::ComplexField;
-    use rand::{rngs::{ThreadRng, StdRng}, SeedableRng};
+    use rand::{rngs::StdRng, SeedableRng};
 
     use super::*;
 

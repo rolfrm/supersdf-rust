@@ -1,20 +1,18 @@
 use crate::{
     mc, sdf, triangle_raster,
-    vec2::{IntoVector2Array, Vec2},
-    vec3::{IntoVector3Array, Vec3},
+    vec2::Vec2,
+    vec3::Vec3,
 };
 
 use std::collections::{HashMap, HashSet};
 
 use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
-use kiss3d::nalgebra::{Const, OPoint, Point3, Vector3};
-use kiss3d::resource::Mesh;
 use mc::*;
 use sdf::*;
 use triangle_raster::*;
 
 pub struct TriangleList {
-    triangles: Vec<[Vec3; 3]>,
+    pub triangles: Vec<[Vec3; 3]>,
 }
 
 impl TriangleList {
@@ -45,7 +43,7 @@ impl MarchingCubesReciever for TriangleList {
 
 pub struct Triangles {
     pub vertices: Vec<Vec3>,
-    triangles: Vec<[usize; 3]>, // Indices of vertices forming triangles
+    triangles: Vec<[usize; 3]>,
 }
 
 impl Triangles {
@@ -76,7 +74,7 @@ impl Triangles {
         }
     }
     pub fn to_triangle_list(&self) -> TriangleList {
-        let mut verts = self
+        let verts = self
             .triangles
             .iter()
             .map(|x| {
@@ -133,16 +131,15 @@ impl Triangles {
 
     pub fn collapse_triangle(&mut self, triangle_index: usize) {
         if triangle_index >= self.triangles.len() {
-            return; // Or handle the error as needed
+            return;
         }
 
         for (i, x) in self.vertices.iter().enumerate() {
             for (i2, x2) in self.vertices.iter().enumerate() {
-                if (i == i2) {
+                if i == i2 {
                     continue;
                 }
-                let dother = (*x - *x2).length();
-                //assert!(dother >=0.005)
+                let _dother = (*x - *x2).length();
             }
         }
 
@@ -157,41 +154,36 @@ impl Triangles {
         self.vertices[triangle[2]] = self.vertices[triangle[0]];
         for trig in &mut self.triangles {
             for i in 1..3 {
-                if (trig[0] == triangle[i]) {
+                if trig[0] == triangle[i] {
                     trig[0] = triangle[0];
                 }
-                if (trig[1] == triangle[i]) {
+                if trig[1] == triangle[i] {
                     trig[1] = triangle[0];
                 }
-                if (trig[2] == triangle[i]) {
+                if trig[2] == triangle[i] {
                     trig[2] = triangle[0];
                 }
             }
         }
-        // Step 3: Remove the collapsed triangle
         self.triangles.remove(triangle_index);
     }
 
     pub fn collapse_triangle2(&mut self, triangle_index: usize) {
-        // Ensure the triangle index is valid
         if triangle_index >= self.triangles.len() {
-            return; // Or handle the error as needed
+            return;
         }
 
         let triangle = self.triangles[triangle_index];
 
-        // Check if any vertex is shared by other triangles
         let shared_vertices = self
             .triangles
             .iter()
             .filter(|&t| t != &triangle && t.iter().any(|&v| triangle.contains(&v)));
 
-        // For simplicity, let's collapse the first shared vertex
         if let Some(shared_triangle) = shared_vertices.clone().next() {
             let shared_vertex = shared_triangle.iter().find(|&v| triangle.contains(v));
 
             if let Some(&shared_vertex_index) = shared_vertex {
-                // Update the shared vertices in other triangles to use the remaining vertex
                 for t in &mut self.triangles {
                     for v in t.iter_mut() {
                         if *v == shared_vertex_index {
@@ -204,30 +196,25 @@ impl Triangles {
                     }
                 }
 
-                // Remove the collapsed triangle
                 self.triangles.remove(triangle_index);
             }
         }
     }
 
     pub fn split_triangle(&mut self, triangle_index: usize) {
-        // Ensure the triangle index is valid
         if triangle_index >= self.triangles.len() {
             return;
         }
 
-        // Get the indices of the vertices of the triangle
         let triangle = self.triangles[triangle_index];
         let v0 = self.vertices[triangle[0]];
         let v1 = self.vertices[triangle[1]];
         let v2 = self.vertices[triangle[2]];
 
-        // Calculate midpoints of each edge
         let m01 = (v0 + v1) * 0.5;
         let m12 = (v1 + v2) * 0.5;
         let m20 = (v2 + v0) * 0.5;
 
-        // Add midpoints to the vertices list
         let m01_index = self.vertices.len();
         self.vertices.push(m01);
         let m12_index = self.vertices.len();
@@ -235,15 +222,11 @@ impl Triangles {
         let m20_index = self.vertices.len();
         self.vertices.push(m20);
 
-        // Create new triangles
         self.triangles.push([triangle[0], m01_index, m20_index]);
         self.triangles.push([m01_index, triangle[1], m12_index]);
         self.triangles.push([m20_index, m12_index, triangle[2]]);
         self.triangles.push([m01_index, m12_index, m20_index]);
 
-        // Remove or modify the original triangle
-        // This depends on how you want to handle the original triangle.
-        // For example, you might want to remove it:
         self.triangles.remove(triangle_index);
     }
 }
@@ -279,49 +262,38 @@ pub fn interpolate_vec2(
     )
 }
 
-fn interpolate_color2(
-    v0: &Vec2,
-    v1: &Vec2,
-    v2: &Vec2,
-    c0: &Vec3,
-    c1: &Vec3,
-    c2: &Vec3,
-    point: &Vec2,
-) -> Vec3 {
-    let f = |p: &Vec2, a: &Vec2, b: &Vec2| {
-        ((b.y - a.y) * (p.x - a.x) + (a.x - b.x) * (p.y - a.y))
-            / ((b.y - a.y) * (v0.x - a.x) + (a.x - b.x) * (v0.y - a.y))
-    };
-    let w0 = f(point, v1, v2);
-    let w1 = f(point, v2, v0);
-    let w2 = f(point, v0, v1);
-
-    w0 * c0 + w1 * c1 + w2 * c2
+/// Raw mesh data for OpenGL rendering (positions, UVs, indices, texture image)
+pub struct RawMesh {
+    pub positions: Vec<f32>,  // flattened x,y,z
+    pub uvs: Vec<f32>,        // flattened u,v
+    pub indices: Vec<u16>,
+    pub image: DynamicImage,
 }
 
-trait VecKey {
-    fn key(&self) -> Vector3<i32>;
+#[derive(Hash, Eq, PartialEq)]
+struct VecKey {
+    x: i32,
+    y: i32,
+    z: i32,
 }
 
-impl VecKey for Vec3 {
-    fn key(&self) -> Vector3<i32> {
-        Vector3::new(
-            (self.x * 100.0) as i32,
-            (self.y * 100.0) as i32,
-            (self.z * 100.0) as i32,
-        )
+fn vec3_to_key(v: &Vec3) -> VecKey {
+    VecKey {
+        x: (v.x * 100.0) as i32,
+        y: (v.y * 100.0) as i32,
+        z: (v.z * 100.0) as i32,
     }
 }
 
 impl TriangleList {
-    pub fn to_mesh(&self, sdf: &DistanceFieldEnum) -> (Mesh, DynamicImage) {
-        let mut coords: Vec<Point3<f32>> = Vec::new();
-        let mut faces = Vec::new();
-        let mut uvs: Vec<Vec2> = Vec::new();
-        let mut face: OPoint<u16, Const<3>> = Point3::new(0, 0, 0);
-        let mut normals = Vec::new();
+    pub fn to_mesh(&self, sdf: &DistanceFieldEnum) -> RawMesh {
+        let mut positions: Vec<f32> = Vec::new();
+        let mut indices: Vec<u16> = Vec::new();
+        let mut uvs: Vec<f32> = Vec::new();
+        let mut face_uvs: [Vec2; 3] = [Vec2::new(0.0, 0.0); 3];
+        let mut face_pos: [Vec3; 3] = [Vec3::ZERO; 3];
         let mut faceit = 0;
-        let mut it = 0;
+        let mut it: u16 = 0;
         let ntriangles: i64 = (self.triangles.len()) as i64;
         let columns = f64::ceil(f64::sqrt(
             f64::try_from(u32::try_from(ntriangles).unwrap()).unwrap(),
@@ -335,18 +307,12 @@ impl TriangleList {
         let pxmargin = 3;
         let uvmargin = (1.0 + rows as f64) * (pxmargin as f64) / (buf.width() as f64);
         let bufsize = Vec2::new(buf.width() as f32, buf.height() as f32);
-        let mut dict: HashMap<Vector3<i32>, i32> = HashMap::new();
         let mut max = Vec3::new(-100000.0, -100000.0, -100000.0);
         let mut min = Vec3::new(-100000.0, -100000.0, -100000.0);
 
         for v in self.vertices() {
             min = min.min(*v);
             max = max.max(*v);
-            let key = v.key();
-
-            if dict.contains_key(&key) {
-                dict.insert(key, dict.len() as i32);
-            }
         }
         let mid = (max + min) * 0.5;
         let size = (max - min).length() * 0.5;
@@ -354,15 +320,13 @@ impl TriangleList {
         let mut cache = HashSet::new();
 
         let sdf = sdf.optimized_for_block(mid, size, &mut cache);
+        let mut face_count: i64 = 0;
 
         for v in self.vertices() {
-            let facei: i64 = faces.len() as i64;
-            let row = (facei / columns) as f64;
-            let col = (facei % columns) as f64;
+            let row = (face_count / columns) as f64;
+            let col = (face_count % columns) as f64;
             let rowf = row / (columns as f64);
             let colf = col / (columns as f64);
-            let normal = sdf.gradient(*v, 0.03);
-            normals.push(normal);
 
             let uv = Vec2::new(
                 (colf
@@ -376,27 +340,30 @@ impl TriangleList {
                         true => 1.0 - uvmargin,
                     })) as f32,
             );
-            coords.push(v.clone().into());
-            uvs.push(uv);
-            face[faceit] = it;
+            positions.push(v.x);
+            positions.push(v.y);
+            positions.push(v.z);
+            uvs.push(uv.x);
+            uvs.push(uv.y);
+
+            face_uvs[faceit] = uv;
+            face_pos[faceit] = *v;
+            indices.push(it);
 
             it += 1;
             faceit += 1;
             if faceit == 3 {
                 faceit = 0;
+                face_count += 1;
 
-                faces.push(face);
+                let va = face_pos[0];
+                let vb = face_pos[1];
+                let vc = face_pos[2];
 
-                let va: Vec3 = coords[coords.len() - 3].to_homogeneous().xyz().into();
-                let vb: Vec3 = coords[coords.len() - 2].to_homogeneous().xyz().into();
-                let vc: Vec3 = coords[coords.len() - 1].to_homogeneous().xyz().into();
+                let uva = face_uvs[0];
+                let uvb = face_uvs[1];
+                let uvc = face_uvs[2];
 
-                // now trace the colors into the texture for this triangle.
-                let uva: Vec2 = uvs[uvs.len() - 3];
-                let uvb = uvs[uvs.len() - 2];
-                let uvc = uvs[uvs.len() - 1];
-
-                // uv in pixel coordinate with a 1px margin.
                 let pa = uva * bufsize.x;
                 let pb = uvb * bufsize.x;
                 let pc = uvc * bufsize.x;
@@ -427,16 +394,12 @@ impl TriangleList {
 
         let image = DynamicImage::ImageRgba8(buf);
 
-        return (
-            Mesh::new(
-                coords,
-                faces,
-                None,//Option::Some(IntoVector3Array(normals)),
-                Option::Some(IntoVector2Array(uvs)),
-                false,
-            ),
+        RawMesh {
+            positions,
+            uvs,
+            indices,
             image,
-        );
+        }
     }
 }
 
@@ -446,7 +409,7 @@ pub fn receive_cube(
     recv: &mut TriangleList,
     sdf: &DistanceFieldEnum,
     position: Vec3,
-    size: f32, 
+    size: f32,
     cache : &mut HashSet<DistanceFieldEnum>
 ) {
     let p = position - Vec3::new(size, size, size);
@@ -459,15 +422,10 @@ pub fn receive_cube(
         let c = sdf.distance(v3);
         let d = sdf.distance(v4);
         let limit1 = 0.0;
-        let limit2 = s * SQRT_3;
         if a < limit1 || b < limit1 || c < limit1 || d < limit1 {
             return;
         }
-        
-        //if a > limit2 && b > limit2 && c > limit2 && d > limit2{
-        //    return;
-        //}
-        
+
         recv.triangles.push([v1, v2, v3]);
         recv.triangles.push([v3, v2, v4]);
     };
@@ -479,27 +437,27 @@ pub fn receive_cube(
         let p = p.with_z(p.z + s);
         receive_face(p, p + Vec3::new(s, 0.0, 0.0), p + Vec3::new(0.0, s, 0.0), p + Vec3::new(s, s, 0.0));
     }
-    
+
     // left face
     receive_face(p, p + Vec3::new(0.0, 0.0, s), p + Vec3::new(0.0, s, 0.0), p + Vec3::new(0.0, s, s));
     // right face
     {
         let p = p.with_x(p.x + s);
         receive_face(p, p + Vec3::new(0.0, s, 0.0), p + Vec3::new(0.0, 0.0, s), p + Vec3::new(0.0, s, s));
-    
+
     }
 
     // bottom face
     receive_face(p, p + Vec3::new(s, 0.0, 0.0), p + Vec3::new(0.0, 0.0 ,s), p + Vec3::new(s, 0.0, s));
-    // right face
+    // top face
     {
         let p = p.with_y(p.y + s);
         receive_face(p, p + Vec3::new(0.0, 0.0, s), p + Vec3::new(s, 0.0, 0.0), p + Vec3::new(s, 0.0, s));
-    
+
     }
 
-    
-   
+
+
 }
 pub fn marching_voxels(
     recv: &mut TriangleList,
@@ -507,15 +465,12 @@ pub fn marching_voxels(
     position: Vec3,
     size: f32,
     res: f32,
-    start_size: f32, 
+    start_size: f32,
     cache : &mut HashSet<DistanceFieldEnum>
 ) {
     let d = model.distance(position);
-    // check if the surface collides with a sphere that can include the cube we want to draw.
     if d < size * SQRT_3 {
-    
-        // If the entire sphere is inside the object, we can skip it.
-        
+
         if d < -size * SQRT_3 {
             return;
         }
@@ -569,16 +524,15 @@ fn are_points_on_same_plane<'a, I>(a: Vec3, b: Vec3, c: Vec3, points: I, toleran
 where
     I: IntoIterator<Item = &'a Vec3>,
 {
-    let p0 = a;
     let v1 = b - a;
     let v2 = c - a;
     let normal = v1.cross(v2);
 
     for point in points {
         let v = Vec3 {
-            x: point.x - p0.x,
-            y: point.y - p0.y,
-            z: point.z - p0.z,
+            x: point.x - a.x,
+            y: point.y - a.y,
+            z: point.z - a.z,
         };
 
         if v.dot(normal).abs() > tolerance {
@@ -595,8 +549,6 @@ fn cubify_get_faces<T1: DistanceField, T: MarchingCubesReciever>(
     pt: Vec3,
     size: f32,
 ) {
-    let mut cubeindex = 0;
-
     let isolevel = 0.0;
 
     let s2 = size * 0.5;
@@ -620,7 +572,6 @@ fn cubify_get_faces<T1: DistanceField, T: MarchingCubesReciever>(
         [2, 6, 3, 7],
         [0, 1, 4, 5],
     ];
-    // face 0: var x,y fixed z.
     for item in faces.into_iter() {
         if item.iter().all(|x| ds[*x] < -0.1) {
             continue;

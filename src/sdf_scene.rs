@@ -3,11 +3,6 @@ use std::collections::{HashMap, HashSet};
 use crate::{sdf, vec3::Vec3};
 use sdf::*;
 
-use kiss3d::{
-    camera::{ArcBall, Camera, FirstPerson},
-    nalgebra::{Matrix4, Point3},
-};
-
 type Vec3f = Vec3;
 
 #[derive(Eq, PartialEq, Hash, Debug, Clone, Copy)]
@@ -18,7 +13,67 @@ pub struct SdfKey {
     pub w: i32,
 }
 
-fn is_in_frustum(cam: &Matrix4<f32>, pos: Vec3, size: f32) -> bool {
+/// Column-major 4x4 matrix stored as [f32; 16]
+pub type Mat4 = [f32; 16];
+
+pub fn mat4_identity() -> Mat4 {
+    [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+pub fn mat4_perspective(fov_rad: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
+    let f = 1.0 / (fov_rad * 0.5).tan();
+    let nf = 1.0 / (near - far);
+    [
+        f / aspect, 0.0, 0.0,                    0.0,
+        0.0,        f,   0.0,                    0.0,
+        0.0,        0.0, (far + near) * nf,      -1.0,
+        0.0,        0.0, 2.0 * far * near * nf,  0.0,
+    ]
+}
+
+pub fn mat4_look_at(eye: Vec3, center: Vec3, up: Vec3) -> Mat4 {
+    let f = (center - eye).normalize();
+    let s = f.cross(up).normalize();
+    let u = s.cross(f);
+    [
+        s.x,           u.x,           -f.x,          0.0,
+        s.y,           u.y,           -f.y,          0.0,
+        s.z,           u.z,           -f.z,          0.0,
+        -s.dot(eye),   -u.dot(eye),   f.dot(eye),    1.0,
+    ]
+}
+
+pub fn mat4_mul(a: &Mat4, b: &Mat4) -> Mat4 {
+    let mut out = [0.0f32; 16];
+    for col in 0..4 {
+        for row in 0..4 {
+            let mut sum = 0.0;
+            for k in 0..4 {
+                sum += a[k * 4 + row] * b[col * 4 + k];
+            }
+            out[col * 4 + row] = sum;
+        }
+    }
+    out
+}
+
+fn mat4_transform_point(m: &Mat4, p: Vec3) -> Option<Vec3> {
+    let x = m[0] * p.x + m[4] * p.y + m[8]  * p.z + m[12];
+    let y = m[1] * p.x + m[5] * p.y + m[9]  * p.z + m[13];
+    let z = m[2] * p.x + m[6] * p.y + m[10] * p.z + m[14];
+    let w = m[3] * p.x + m[7] * p.y + m[11] * p.z + m[15];
+    if w.abs() < 1e-10 {
+        return None;
+    }
+    Some(Vec3::new(x / w, y / w, z / w))
+}
+
+fn is_in_frustum(cam: &Mat4, pos: Vec3, size: f32) -> bool {
     let mut min = Vec3::new(0.0, 0.0, 0.0);
     let mut max = min;
     let mut first = true;
@@ -27,21 +82,19 @@ fn is_in_frustum(cam: &Matrix4<f32>, pos: Vec3, size: f32) -> bool {
         let y = (i >> 1) & 1;
         let z = (i >> 2) & 1;
         let v = pos + Vec3::new(x as f32 - 0.5, y as f32 - 0.5, z as f32 - 0.5) * size;
-        let v2: Point3<f32> = v.into();
-        let v3 = cam * v2.to_homogeneous();
-        let v4 = Point3::from_homogeneous(v3);
-        if let None = v4 {
+        let v4 = mat4_transform_point(cam, v);
+        if v4.is_none() {
             continue;
         }
-        let v: Vec3 = v4.unwrap().into();
+        let v = v4.unwrap();
 
         if first {
             first = false;
-            min = v.into();
+            min = v;
             max = min;
         } else {
-            min = min.min(v.into());
-            max = max.max(v.into());
+            min = min.min(v);
+            max = max.max(v);
         }
     }
 
@@ -58,24 +111,6 @@ fn is_in_frustum(cam: &Matrix4<f32>, pos: Vec3, size: f32) -> bool {
     return true;
 }
 
-pub enum CameraEnum {
-    ArcBall(ArcBall),
-    FirstPerson(FirstPerson),
-    None,
-}
-
-impl Into<CameraEnum> for &FirstPerson {
-    fn into(self) -> CameraEnum {
-        CameraEnum::FirstPerson(self.clone())
-    }
-}
-
-impl Into<CameraEnum> for &ArcBall {
-    fn into(self) -> CameraEnum {
-        CameraEnum::ArcBall(self.clone())
-    }
-}
-
 pub fn box_is_occluded(eye: Vec3, p: Vec3, size: f32, sdf: &DistanceFieldEnum) -> bool {
     let d0 = sdf.distance(eye);
 
@@ -87,7 +122,7 @@ pub fn box_is_occluded(eye: Vec3, p: Vec3, size: f32, sdf: &DistanceFieldEnum) -
     let dir = dir / d1;
 
     let target = p - (dir * size);
-    
+
     let mut it = eye + dir * d0;
     for _ in 0..128 {
         let d = sdf.distance(it) + size;
@@ -117,7 +152,7 @@ pub struct SdfScene {
     pub eye_pos: Vec3f,
     pub block_size: f32,
     pub render_blocks: Vec<(Vec3f, f32, SdfKey, DistanceFieldEnum, f32)>,
-    pub cam: Matrix4<f32>,
+    pub cam: Mat4,
     cache: HashSet<DistanceFieldEnum>,
     map: HashMap<SdfKey, DistanceFieldEnum>,
 }
@@ -126,12 +161,15 @@ const SQRT3: f32 = 1.73205080757;
 impl SdfScene {
     pub fn new(sdf: DistanceFieldEnum) -> SdfScene {
         SdfScene {
-            sdf: sdf,
+            sdf,
             eye_pos: Vec3::zeros(),
             block_size: 2.0,
             render_blocks: Vec::new(),
-            cam: FirstPerson::new(Point3::new(0.0, 0.0, -5.0), Point3::new(0.0, 0.0, 0.0))
-                .transformation(),
+            cam: mat4_look_at(
+                Vec3::new(0.0, 0.0, -5.0),
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ),
             cache: HashSet::new(),
             map: HashMap::new(),
         }
@@ -141,10 +179,6 @@ impl SdfScene {
         self.eye_pos = v;
         return self;
     }
-
-    //pub fn with_eye_dir(mut self, dir: Vec3f) -> SdfScene {
-
-    //}
 
     fn callback(
         &mut self,
@@ -181,9 +215,6 @@ impl SdfScene {
         self.iterate_scene_rec(p, size, true)
     }
 
-    // The `iterate_scene_rec` function is a recursive function that works by dividing the scene into cells, and for each cell, it checks
-    // if it's close enough to the scene, or if it's too small or not, and if so, it skips the current cell. If the cell is relevant, it will
-    // divide it into eight smaller cells and repeat the process.
     fn iterate_scene_rec(&mut self, cell_position: Vec3, cell_size: f32, update: bool) {
         let key = SdfKey {
             x: cell_position.x as i32,
@@ -194,13 +225,10 @@ impl SdfScene {
 
         let key_exists = self.map.contains_key(&key);
         let mut update2 = !key_exists;
-        let (d, omodel) = if !update && key_exists {
+        let (d, _omodel) = if !update && key_exists {
             let map = self.map[&key].clone();
             (map.distance(cell_position), map)
         } else {
-            // Calculate the SDF distance and check if optimizations can be made for the sdf in a local scope.
-            //let (d, omodel) = (self.sdf.distance(cell_position), self.sdf.clone());
-
             let r = self
                 .sdf
                 .distance_and_optimize(cell_position, cell_size, &mut self.cache);
@@ -229,24 +257,19 @@ impl SdfScene {
             return;
         }
 
-        // frustum culling, occlusion culling, etc...
         if self.skip_block(cell_position, cell_size) {
             return;
         }
 
-        // Calculate the distance of the cell from the eye position
         let cell_distance = (cell_position - self.eye_pos).length();
 
-        // Calculate the LOD level based on the distance of the cell.
         let lod_level = (0.05 * cell_distance / self.block_size)
             .log2()
             .floor()
             .max(0.0);
 
-        // Calculate the cell size. Farther away -> bigger blocks with lower resolution.
         let lod_cell_size = self.block_size * 2.0_f32.powf(lod_level);
 
-        // if the size of the current cell is less than the lod cell size
         if cell_size <= lod_cell_size {
             let omodel2 = self
                 .sdf
@@ -264,7 +287,6 @@ impl SdfScene {
             return;
         }
 
-        // If the cell is not returned early, then we divide the cell into eight smaller cells and repeat the process for each.
         let s2 = cell_size / 2.0;
         let o = [-s2, s2];
 
@@ -294,7 +316,7 @@ mod tests {
 
         sdf_iterator.iterate_scene(Vec3::new(0.0, 0.0, 0.0), 2.0 * 512.0);
         println!("Count: {}", sdf_iterator.render_blocks.len());
-        for block in sdf_iterator.render_blocks {
+        for _block in sdf_iterator.render_blocks {
             //println!("{:?}", block.2);
         }
     }

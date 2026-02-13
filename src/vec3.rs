@@ -1,5 +1,4 @@
 use std::{ops::{Add, Sub, Mul, Div, Neg}, fmt, hash::Hasher, hash::Hash, iter::Sum};
-use kiss3d::nalgebra::{Point3, Vector3};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Vec3{
@@ -14,12 +13,12 @@ impl Hash for Vec3 {
         state.write_i32((self.x * 1000.0) as i32);
         state.write_i32((self.y * 1000.0) as i32);
         state.write_i32((self.z * 1000.0) as i32);
-        
+
        }
 }
 
 impl std::cmp::Eq for Vec3 {
-    
+
 }
 
 impl Vec3 {
@@ -59,12 +58,12 @@ impl Vec3 {
     pub fn length_squared(&self) -> f32 { self.dot(*self) }
 
     pub fn map<F: FnMut(f32) -> f32>(self, mut f: F) -> Self { Vec3::new(f(self.x), f(self.y), f(self.z)) }
-    
+
 
     pub fn map2<F: Fn(f32,f32) -> f32>(self, other: Vec3, f: F) -> Self {
-        Vec3::new(f(self.x, other.x), f(self.y, other.y), f(self.z, other.z))   
+        Vec3::new(f(self.x, other.x), f(self.y, other.y), f(self.z, other.z))
     }
-    
+
     pub fn min(self, other: Vec3) -> Vec3{ self.map2(other, f32::min) }
 
     pub fn max(self, other: Vec3) -> Vec3{ self.map2(other, f32::max) }
@@ -241,36 +240,6 @@ impl fmt::Display for Vec3 {
     }
 }
 
-impl Into<Vec3> for Vector3<f32>{
-    fn into(self) -> Vec3 {
-        Vec3::new(self.x, self.y, self.z)
-    }
-}
-
-impl Into<Vector3<f32>> for Vec3{
-    fn into(self) -> Vector3<f32> {
-        self.apply_to(Vector3::new)
-    }
-}
-impl Into<Point3<f32>> for Vec3{
-    fn into(self) -> Point3<f32> {
-        Point3::new(self.x, self.y, self.z)
-    }
-}
-impl Into<Vec3> for Point3<f32>{
-    fn into(self) -> Vec3 {
-        Vec3::new(self.x, self.y, self.z)
-    }
-}
-
-pub fn IntoVector3Array(vecs : Vec<Vec3>) -> Vec<Vector3<f32>> {
-    let mut out = Vec::new();
-    for x in vecs.into_iter() {
-        out.push(x.into());
-    }
-    return out;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +313,5 @@ mod tests {
         assert!(!a.eq(&b));
     }
 
-    
+
 }
