@@ -262,9 +262,10 @@ pub fn interpolate_vec2(
     )
 }
 
-/// Raw mesh data for OpenGL rendering (positions, UVs, indices, texture image)
+/// Raw mesh data for OpenGL rendering (positions, normals, UVs, indices, texture image)
 pub struct RawMesh {
     pub positions: Vec<f32>,  // flattened x,y,z
+    pub normals: Vec<f32>,    // flattened nx,ny,nz
     pub uvs: Vec<f32>,        // flattened u,v
     pub indices: Vec<u16>,
     pub image: DynamicImage,
@@ -288,6 +289,7 @@ fn vec3_to_key(v: &Vec3) -> VecKey {
 impl TriangleList {
     pub fn to_mesh(&self, sdf: &DistanceFieldEnum) -> RawMesh {
         let mut positions: Vec<f32> = Vec::new();
+        let mut normals: Vec<f32> = Vec::new();
         let mut indices: Vec<u16> = Vec::new();
         let mut uvs: Vec<f32> = Vec::new();
         let mut face_uvs: [Vec2; 3] = [Vec2::new(0.0, 0.0); 3];
@@ -343,6 +345,10 @@ impl TriangleList {
             positions.push(v.x);
             positions.push(v.y);
             positions.push(v.z);
+            let n = sdf.gradient(*v, size * 0.1).normalize();
+            normals.push(n.x);
+            normals.push(n.y);
+            normals.push(n.z);
             uvs.push(uv.x);
             uvs.push(uv.y);
 
@@ -396,6 +402,7 @@ impl TriangleList {
 
         RawMesh {
             positions,
+            normals,
             uvs,
             indices,
             image,

@@ -16,22 +16,42 @@ use crate::sdf::*;
 const VERTEX_SHADER_SRC: &str = r#"
 #version 120
 attribute vec3 aPos;
+attribute vec3 aNormal;
 attribute vec2 aUV;
 uniform mat4 uMVP;
 varying vec2 vUV;
+varying vec3 vNormal;
+varying vec3 vWorldPos;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
     vUV = aUV;
+    vNormal = aNormal;
+    vWorldPos = aPos;
 }
 "#;
 
-// GLSL 120 fragment shader
+// GLSL 120 fragment shader — Blinn-Phong shading
 const FRAGMENT_SHADER_SRC: &str = r#"
 #version 120
 varying vec2 vUV;
+varying vec3 vNormal;
+varying vec3 vWorldPos;
 uniform sampler2D uTexture;
+uniform vec3 uEyePos;
+uniform vec3 uLightDir;
 void main() {
-    gl_FragColor = texture2D(uTexture, vUV);
+    vec3 N = normalize(vNormal);
+    vec3 L = normalize(uLightDir);
+    vec3 V = normalize(uEyePos - vWorldPos);
+    vec3 H = normalize(L + V);
+
+    float ambient = 0.15;
+    float diff = max(dot(N, L), 0.0);
+    float spec = pow(max(dot(N, H), 0.0), 32.0);
+
+    vec4 texColor = texture2D(uTexture, vUV);
+    vec3 lit = texColor.rgb * (ambient + diff * 0.75) + vec3(1.0) * spec * 0.3;
+    gl_FragColor = vec4(lit, texColor.a);
 }
 "#;
 
@@ -40,7 +60,10 @@ struct ShaderProgram {
     id: GLuint,
     loc_mvp: GLint,
     loc_texture: GLint,
+    loc_eye_pos: GLint,
+    loc_light_dir: GLint,
     loc_pos: GLuint,
+    loc_normal: GLuint,
     loc_uv: GLuint,
 }
 
@@ -89,14 +112,20 @@ fn create_shader_program() -> ShaderProgram {
 
         let mvp_name = CString::new("uMVP").unwrap();
         let tex_name = CString::new("uTexture").unwrap();
+        let eye_name = CString::new("uEyePos").unwrap();
+        let light_name = CString::new("uLightDir").unwrap();
         let pos_name = CString::new("aPos").unwrap();
+        let normal_name = CString::new("aNormal").unwrap();
         let uv_name = CString::new("aUV").unwrap();
 
         ShaderProgram {
             id: program,
             loc_mvp: gl::GetUniformLocation(program, mvp_name.as_ptr()),
             loc_texture: gl::GetUniformLocation(program, tex_name.as_ptr()),
+            loc_eye_pos: gl::GetUniformLocation(program, eye_name.as_ptr()),
+            loc_light_dir: gl::GetUniformLocation(program, light_name.as_ptr()),
             loc_pos: gl::GetAttribLocation(program, pos_name.as_ptr()) as GLuint,
+            loc_normal: gl::GetAttribLocation(program, normal_name.as_ptr()) as GLuint,
             loc_uv: gl::GetAttribLocation(program, uv_name.as_ptr()) as GLuint,
         }
     }
@@ -105,6 +134,7 @@ fn create_shader_program() -> ShaderProgram {
 /// GPU-side mesh handle
 struct GlMesh {
     vbo_pos: GLuint,
+    vbo_normal: GLuint,
     vbo_uv: GLuint,
     ebo: GLuint,
     texture: GLuint,
@@ -115,6 +145,7 @@ impl GlMesh {
     fn from_raw(raw: &RawMesh) -> GlMesh {
         unsafe {
             let mut vbo_pos: GLuint = 0;
+            let mut vbo_normal: GLuint = 0;
             let mut vbo_uv: GLuint = 0;
             let mut ebo: GLuint = 0;
             let mut texture: GLuint = 0;
@@ -126,6 +157,16 @@ impl GlMesh {
                 gl::ARRAY_BUFFER,
                 (raw.positions.len() * mem::size_of::<f32>()) as GLsizeiptr,
                 raw.positions.as_ptr() as *const _,
+                gl::STATIC_DRAW,
+            );
+
+            // normals
+            gl::GenBuffers(1, &mut vbo_normal);
+            gl::BindBuffer(gl::ARRAY_BUFFER, vbo_normal);
+            gl::BufferData(
+                gl::ARRAY_BUFFER,
+                (raw.normals.len() * mem::size_of::<f32>()) as GLsizeiptr,
+                raw.normals.as_ptr() as *const _,
                 gl::STATIC_DRAW,
             );
 
@@ -172,6 +213,7 @@ impl GlMesh {
 
             GlMesh {
                 vbo_pos,
+                vbo_normal,
                 vbo_uv,
                 ebo,
                 texture,
@@ -183,6 +225,7 @@ impl GlMesh {
     fn destroy(&self) {
         unsafe {
             gl::DeleteBuffers(1, &self.vbo_pos);
+            gl::DeleteBuffers(1, &self.vbo_normal);
             gl::DeleteBuffers(1, &self.vbo_uv);
             gl::DeleteBuffers(1, &self.ebo);
             gl::DeleteTextures(1, &self.texture);
@@ -372,6 +415,7 @@ impl AppState {
                         // Empty mesh - create a placeholder with 0 indices
                         let empty = GlMesh {
                             vbo_pos: 0,
+                            vbo_normal: 0,
                             vbo_uv: 0,
                             ebo: 0,
                             texture: 0,
@@ -400,6 +444,12 @@ impl AppState {
             gl::UniformMatrix4fv(self.shader.loc_mvp, 1, gl::FALSE, vp.as_ptr());
             gl::Uniform1i(self.shader.loc_texture, 0);
 
+            // Light from above-right-front, normalized
+            let light_dir = Vec3::new(0.4, 0.7, 0.5).normalize();
+            gl::Uniform3f(self.shader.loc_light_dir, light_dir.x, light_dir.y, light_dir.z);
+            let eye = self.camera.position;
+            gl::Uniform3f(self.shader.loc_eye_pos, eye.x, eye.y, eye.z);
+
             for key in &self.visible_keys {
                 if let Some((mesh, _, _, _)) = self.nodes.get(key) {
                     if mesh.num_indices == 0 {
@@ -413,6 +463,17 @@ impl AppState {
                     gl::BindBuffer(gl::ARRAY_BUFFER, mesh.vbo_pos);
                     gl::VertexAttribPointer(
                         self.shader.loc_pos,
+                        3,
+                        gl::FLOAT,
+                        gl::FALSE,
+                        0,
+                        ptr::null(),
+                    );
+
+                    gl::EnableVertexAttribArray(self.shader.loc_normal);
+                    gl::BindBuffer(gl::ARRAY_BUFFER, mesh.vbo_normal);
+                    gl::VertexAttribPointer(
+                        self.shader.loc_normal,
                         3,
                         gl::FLOAT,
                         gl::FALSE,
@@ -440,6 +501,7 @@ impl AppState {
                     );
 
                     gl::DisableVertexAttribArray(self.shader.loc_pos);
+                    gl::DisableVertexAttribArray(self.shader.loc_normal);
                     gl::DisableVertexAttribArray(self.shader.loc_uv);
                 }
             }
