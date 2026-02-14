@@ -12,7 +12,7 @@ use sdf::*;
 use vec3::Vec3;
 
 use gl::types::*;
-use glfw::{Action, Context, Key};
+use glfw::{Action, Context, Key, MouseButton};
 use std::ffi::CString;
 use std::ptr;
 use std::str;
@@ -155,6 +155,7 @@ fn main() {
         .expect("Failed to create GLFW window");
 
     window.set_key_polling(true);
+    window.set_mouse_button_polling(true);
     window.set_framebuffer_size_polling(true);
     window.set_cursor_pos_polling(true);
     window.make_current();
@@ -243,6 +244,30 @@ fn main() {
                             println!("Reset scene");
                         }
                         _ => {}
+                    }
+                }
+                glfw::WindowEvent::MouseButton(MouseButton::Button2, Action::Press, _) => {
+                    // Right-click: cast ray through cursor, subtract sphere at hit
+                    let (win_w, win_h) = window.get_framebuffer_size();
+                    let (cx, cy) = window.get_cursor_pos();
+                    let ux = (cx as f32 - 0.5 * win_w as f32) / win_h as f32;
+                    let uy = -(cy as f32 - 0.5 * win_h as f32) / win_h as f32;
+
+                    let cam_dir = Vec3::new(
+                        yaw.sin() * pitch.cos(),
+                        pitch.sin(),
+                        yaw.cos() * pitch.cos(),
+                    ).normalize();
+                    let cam_up = Vec3::new(0.0, 1.0, 0.0);
+                    let cam_right = cam_up.cross(cam_dir).normalize();
+                    let cam_up2 = cam_dir.cross(cam_right);
+                    let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
+
+                    if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
+                        sdf = sdf.subtract(DistanceFieldEnum::sphere(hit_pos, 5.0));
+                        sdf = sdf.optimize_bounds();
+                        sdf_dirty = true;
+                        println!("Subtracted sphere at {}", hit_pos);
                     }
                 }
                 glfw::WindowEvent::FramebufferSize(w, h) => unsafe {
