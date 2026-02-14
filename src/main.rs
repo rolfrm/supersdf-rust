@@ -136,7 +136,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
     let sub = Vec3::new(12.840058, 74.62816, 8.423447);
     let sdf = sdf.subtract(DistanceFieldEnum::sphere(sub, 2.0));
 
-    sdf.optimize_bounds()
+    return sdf.optimize_bounds()
 }
 
 fn main() {
@@ -250,10 +250,9 @@ fn main() {
                 glfw::WindowEvent::MouseButton(MouseButton::Button2, Action::Press, _) => {
                     // Right-click: cast ray through cursor, subtract sphere at hit
                     let (win_w, win_h) = window.get_framebuffer_size();
-                    let (cx, cy) = window.get_cursor_pos();
+                    let (cx, cy) = (win_w as f32 / 2.0, win_h as f32 / 2.0);
                     let ux = (cx as f32 - 0.5 * win_w as f32) / win_h as f32;
                     let uy = -(cy as f32 - 0.5 * win_h as f32) / win_h as f32;
-
                     let cam_dir = Vec3::new(
                         yaw.sin() * pitch.cos(),
                         pitch.sin(),
@@ -263,6 +262,7 @@ fn main() {
                     let cam_right = cam_up.cross(cam_dir).normalize();
                     let cam_up2 = cam_dir.cross(cam_right);
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
+                    
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
                         sdf = sdf.subtract(DistanceFieldEnum::sphere(hit_pos, 5.0));
