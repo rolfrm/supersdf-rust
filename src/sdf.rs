@@ -309,7 +309,7 @@ pub struct Add {
     pub(crate) left: Rc<DistanceFieldEnum>,
     pub(crate) right: Rc<DistanceFieldEnum>,
     size : u32,
-    bounds: Sphere,
+    pub(crate) bounds: Sphere,
     hash: u64
 }
 fn rgba_interp(a: Color, b: Color, v: f32) -> Color {

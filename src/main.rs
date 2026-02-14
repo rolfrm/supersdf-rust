@@ -25,7 +25,7 @@ void main() {
 }
 "#;
 
-fn compile_shader(src: &str, shader_type: GLenum) -> GLuint {
+fn compile_gl_shader(src: &str, shader_type: GLenum) -> GLuint {
     unsafe {
         let shader = gl::CreateShader(shader_type);
         let c_str = CString::new(src.as_bytes()).unwrap();
@@ -40,7 +40,9 @@ fn compile_shader(src: &str, shader_type: GLenum) -> GLuint {
             let mut buf = vec![0u8; len as usize];
             gl::GetShaderInfoLog(shader, len, ptr::null_mut(), buf.as_mut_ptr() as *mut GLchar);
             let msg = str::from_utf8(&buf).unwrap_or("(invalid utf8)");
-            panic!("Shader compilation failed:\n{}", msg);
+            eprintln!("Shader compilation failed:\n{}", msg);
+            gl::DeleteShader(shader);
+            return 0;
         }
         shader
     }
@@ -61,7 +63,11 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
             let mut buf = vec![0u8; len as usize];
             gl::GetProgramInfoLog(program, len, ptr::null_mut(), buf.as_mut_ptr() as *mut GLchar);
             let msg = str::from_utf8(&buf).unwrap_or("(invalid utf8)");
-            panic!("Program linking failed:\n{}", msg);
+            eprintln!("Program linking failed:\n{}", msg);
+            gl::DeleteProgram(program);
+            gl::DeleteShader(vs);
+            gl::DeleteShader(fs);
+            return 0;
         }
 
         gl::DeleteShader(vs);
@@ -70,37 +76,72 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
     }
 }
 
-fn main() {
-    // Build the SDF scene
-    let s2: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 10.0).into();
-    let s2 = s2.colored(Color::rgb(1.0, 0.0, 0.0));
-    let a1 = s2;
+struct ShaderProgram {
+    id: GLuint,
+    u_resolution: GLint,
+    u_camera_pos: GLint,
+    u_camera_dir: GLint,
+    u_camera_up: GLint,
+}
+
+/// Compile an SDF tree into a GL shader program. Returns None on failure.
+fn build_sdf_program(sdf: &DistanceFieldEnum) -> Option<ShaderProgram> {
+    let frag_src = sdf_compiler::compile_sdf_shader(sdf);
+
+    let vs = compile_gl_shader(VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
+    if vs == 0 { return None; }
+
+    let fs = compile_gl_shader(&frag_src, gl::FRAGMENT_SHADER);
+    if fs == 0 {
+        unsafe { gl::DeleteShader(vs); }
+        return None;
+    }
+
+    let id = link_program(vs, fs);
+    if id == 0 { return None; }
+
+    unsafe {
+        gl::UseProgram(id);
+        Some(ShaderProgram {
+            id,
+            u_resolution: gl::GetUniformLocation(id, CString::new("u_resolution").unwrap().as_ptr()),
+            u_camera_pos: gl::GetUniformLocation(id, CString::new("u_camera_pos").unwrap().as_ptr()),
+            u_camera_dir: gl::GetUniformLocation(id, CString::new("u_camera_dir").unwrap().as_ptr()),
+            u_camera_up: gl::GetUniformLocation(id, CString::new("u_camera_up").unwrap().as_ptr()),
+        })
+    }
+}
+
+fn build_initial_scene() -> DistanceFieldEnum {
+    let s1: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 10.0).into();
+    let s1 = s1.colored(Color::rgb(1.0, 0.0, 0.0));
 
     let s2: DistanceFieldEnum = Sphere::new(Vec3::new(50.0, 0.0, 0.0), 10.0).into();
     let s2 = s2.colored(Color::rgb(0.0, 1.0, 0.0));
-    let a1: DistanceFieldEnum = Add::new(a1, s2).into();
+    let sdf: DistanceFieldEnum = Add::new(s1, s2).into();
 
-    let s2: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 50.0), 10.0).into();
-    let s2 = s2.colored(Color::rgb(0.0, 1.0, 1.0));
-    let a1: DistanceFieldEnum = Add::new(a1, s2).into();
+    let s3: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 50.0), 10.0).into();
+    let s3 = s3.colored(Color::rgb(0.0, 1.0, 1.0));
+    let sdf: DistanceFieldEnum = Add::new(sdf, s3).into();
 
-    let s2: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 50.0, 0.0), 10.0).into();
-    let s2 = s2.colored(Color::rgb(1.0, 1.0, 0.0));
-    let a1: DistanceFieldEnum = Add::new(a1, s2).into();
+    let s4: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 50.0, 0.0), 10.0).into();
+    let s4 = s4.colored(Color::rgb(1.0, 1.0, 0.0));
+    let sdf: DistanceFieldEnum = Add::new(sdf, s4).into();
 
-    let s2: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, -50.0, 0.0), 10.0).into();
-    let s2 = s2.colored(Color::rgb(1.0, 0.0, 1.0));
-    let a1: DistanceFieldEnum = Add::new(a1, s2).into();
+    let s5: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, -50.0, 0.0), 10.0).into();
+    let s5 = s5.colored(Color::rgb(1.0, 0.0, 1.0));
+    let sdf: DistanceFieldEnum = Add::new(sdf, s5).into();
 
     let sub = Vec3::new(12.840058, 74.62816, 8.423447);
-    let a1 = a1.subtract(DistanceFieldEnum::sphere(sub, 2.0));
+    let sdf = sdf.subtract(DistanceFieldEnum::sphere(sub, 2.0));
 
-    let sdf = a1.optimize_bounds();
+    sdf.optimize_bounds()
+}
 
-    // Compile SDF -> GLSL
-    let frag_src = sdf_compiler::compile_sdf_shader(&sdf);
-    println!("--- Generated fragment shader ---");
-    println!("{}", frag_src);
+fn main() {
+    let mut sdf = build_initial_scene();
+    let mut sdf_dirty = true;
+    let mut sphere_count: u32 = 0;
 
     // Init GLFW
     let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
@@ -119,11 +160,6 @@ fn main() {
     window.make_current();
 
     gl::load_with(|symbol| window.get_proc_address(symbol) as *const _);
-
-    // Compile shaders and link program
-    let vs = compile_shader(VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
-    let fs = compile_shader(&frag_src, gl::FRAGMENT_SHADER);
-    let program = link_program(vs, fs);
 
     // Fullscreen quad (two triangles covering clip space)
     let vertices: [f32; 12] = [
@@ -157,18 +193,8 @@ fn main() {
         gl::BindVertexArray(0);
     }
 
-    // Get uniform locations
-    let u_resolution;
-    let u_camera_pos;
-    let u_camera_dir;
-    let u_camera_up;
-    unsafe {
-        gl::UseProgram(program);
-        u_resolution = gl::GetUniformLocation(program, CString::new("u_resolution").unwrap().as_ptr());
-        u_camera_pos = gl::GetUniformLocation(program, CString::new("u_camera_pos").unwrap().as_ptr());
-        u_camera_dir = gl::GetUniformLocation(program, CString::new("u_camera_dir").unwrap().as_ptr());
-        u_camera_up = gl::GetUniformLocation(program, CString::new("u_camera_up").unwrap().as_ptr());
-    }
+    // Initial shader program (will be built on first frame via dirty flag)
+    let mut program: Option<ShaderProgram> = None;
 
     // Camera state
     let mut cam_pos = Vec3::new(0.0, 0.0, -60.0);
@@ -202,7 +228,45 @@ fn main() {
                     pitch -= dy * mouse_sensitivity;
                     pitch = pitch.clamp(-1.5, 1.5);
                 }
+                // Space: add a sphere at the camera position
+                glfw::WindowEvent::Key(Key::Space, _, Action::Press, _) => {
+                    sphere_count += 1;
+                    let new_sphere = Sphere::new(cam_pos, 5.0)
+                        .color(Color::rgb(
+                            (sphere_count * 97 % 255) as f32 / 255.0,
+                            (sphere_count * 53 % 255) as f32 / 255.0,
+                            (sphere_count * 179 % 255) as f32 / 255.0,
+                        ));
+                    sdf = sdf.add(new_sphere).optimize_bounds();
+                    sdf_dirty = true;
+                    println!("Added sphere #{} at {}", sphere_count, cam_pos);
+                }
+                // R: reset to initial scene
+                glfw::WindowEvent::Key(Key::R, _, Action::Press, _) => {
+                    sdf = build_initial_scene();
+                    sphere_count = 0;
+                    sdf_dirty = true;
+                    println!("Reset scene");
+                }
                 _ => {}
+            }
+        }
+
+        // Recompile shader if SDF changed
+        if sdf_dirty {
+            sdf_dirty = false;
+            if let Some(old) = &program {
+                unsafe { gl::DeleteProgram(old.id); }
+            }
+            match build_sdf_program(&sdf) {
+                Some(p) => {
+                    println!("Shader recompiled successfully");
+                    program = Some(p);
+                }
+                None => {
+                    eprintln!("Failed to compile shader for current SDF");
+                    program = None;
+                }
             }
         }
 
@@ -235,22 +299,26 @@ fn main() {
             gl::ClearColor(0.0, 0.0, 0.0, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
 
-            gl::UseProgram(program);
-            gl::Uniform2f(u_resolution, w as f32, h as f32);
-            gl::Uniform3f(u_camera_pos, cam_pos.x, cam_pos.y, cam_pos.z);
-            gl::Uniform3f(u_camera_dir, dir.x, dir.y, dir.z);
-            gl::Uniform3f(u_camera_up, up.x, up.y, up.z);
+            if let Some(prog) = &program {
+                gl::UseProgram(prog.id);
+                gl::Uniform2f(prog.u_resolution, w as f32, h as f32);
+                gl::Uniform3f(prog.u_camera_pos, cam_pos.x, cam_pos.y, cam_pos.z);
+                gl::Uniform3f(prog.u_camera_dir, dir.x, dir.y, dir.z);
+                gl::Uniform3f(prog.u_camera_up, up.x, up.y, up.z);
 
-            gl::BindVertexArray(vao);
-            gl::DrawArrays(gl::TRIANGLES, 0, 6);
+                gl::BindVertexArray(vao);
+                gl::DrawArrays(gl::TRIANGLES, 0, 6);
+            }
         }
 
         window.swap_buffers();
     }
 
+    if let Some(prog) = &program {
+        unsafe { gl::DeleteProgram(prog.id); }
+    }
     unsafe {
         gl::DeleteVertexArrays(1, &vao);
         gl::DeleteBuffers(1, &vbo);
-        gl::DeleteProgram(program);
     }
 }

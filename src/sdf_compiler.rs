@@ -211,10 +211,29 @@ float fbm_noise(vec3 p, float seed) {
             }
 
             DistanceFieldEnum::Add(add) => {
-                let left = self.emit_distance(&add.left, lines);
-                let right = self.emit_distance(&add.right, lines);
                 let id = self.fresh_id();
-                lines.push_str(&format!("    float _da{id} = min({left}, {right});\n"));
+                let b = &add.bounds;
+                // Bounding sphere early-out: if point is far from bounds,
+                // skip evaluating both children and return bounds distance.
+                lines.push_str(&format!(
+                    "    float _bd{id} = length(p - vec3({}, {}, {})) - {};\n",
+                    ff(b.center.x), ff(b.center.y), ff(b.center.z), ff(b.radius)
+                ));
+                lines.push_str(&format!("    float _da{id};\n"));
+                lines.push_str(&format!("    if (_bd{id} > {}) {{\n", ff(b.radius)));
+                lines.push_str(&format!("        _da{id} = _bd{id};\n"));
+                lines.push_str("    } else {\n");
+
+                let mut inner = String::new();
+                let left = self.emit_distance(&add.left, &mut inner);
+                let right = self.emit_distance(&add.right, &mut inner);
+                for line in inner.lines() {
+                    lines.push_str("    ");
+                    lines.push_str(line);
+                    lines.push('\n');
+                }
+                lines.push_str(&format!("        _da{id} = min({left}, {right});\n"));
+                lines.push_str("    }\n");
                 format!("_da{id}")
             }
 
@@ -362,6 +381,8 @@ mod tests {
             Sphere::new(Vec3::new(3.0, 0.0, 0.0), 1.0).color(Color::BLUE);
         let sdf = Add::new2(s1, s2);
         let shader = compile_sdf_shader(&sdf);
+        // Should contain bounding sphere check and min()
+        assert!(shader.contains("_bd"));
         assert!(shader.contains("min("));
         println!("{}", shader);
     }
