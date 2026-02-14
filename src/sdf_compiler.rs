@@ -48,7 +48,7 @@ vec3 calc_normal(vec3 p) {{
 void main() {{
     vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
 
-    vec3 right = normalize(cross(u_camera_dir, u_camera_up));
+    vec3 right = normalize(cross(u_camera_up, u_camera_dir));
     vec3 up = cross(right, u_camera_dir);
     vec3 rd = normalize(uv.x * right + uv.y * up + 1.0 * u_camera_dir);
 

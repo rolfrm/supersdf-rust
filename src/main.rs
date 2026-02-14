@@ -205,13 +205,45 @@ fn main() {
     let move_speed = 1.0f32;
     let mouse_sensitivity = 0.002f32;
 
+    // Track key held state via events (more reliable than get_key polling)
+    let mut key_w = false;
+    let mut key_a = false;
+    let mut key_s = false;
+    let mut key_d = false;
+
     while !window.should_close() {
         glfw.poll_events();
 
         for (_, event) in glfw::flush_messages(&events) {
             match event {
-                glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
-                    window.set_should_close(true);
+                glfw::WindowEvent::Key(key, _, action, _) => {
+                    let pressed = action != Action::Release;
+                    match key {
+                        Key::Escape if pressed => window.set_should_close(true),
+                        Key::W => key_w = pressed,
+                        Key::A => key_a = pressed,
+                        Key::S => key_s = pressed,
+                        Key::D => key_d = pressed,
+                        Key::Space if pressed => {
+                            sphere_count += 1;
+                            let new_sphere = Sphere::new(cam_pos, 5.0)
+                                .color(Color::rgb(
+                                    (sphere_count * 97 % 255) as f32 / 255.0,
+                                    (sphere_count * 53 % 255) as f32 / 255.0,
+                                    (sphere_count * 179 % 255) as f32 / 255.0,
+                                ));
+                            sdf = sdf.add(new_sphere).optimize_bounds();
+                            sdf_dirty = true;
+                            println!("Added sphere #{} at {}", sphere_count, cam_pos);
+                        }
+                        Key::R if pressed => {
+                            sdf = build_initial_scene();
+                            sphere_count = 0;
+                            sdf_dirty = true;
+                            println!("Reset scene");
+                        }
+                        _ => {}
+                    }
                 }
                 glfw::WindowEvent::FramebufferSize(w, h) => unsafe {
                     gl::Viewport(0, 0, w, h);
@@ -227,26 +259,6 @@ fn main() {
                     yaw += dx * mouse_sensitivity;
                     pitch -= dy * mouse_sensitivity;
                     pitch = pitch.clamp(-1.5, 1.5);
-                }
-                // Space: add a sphere at the camera position
-                glfw::WindowEvent::Key(Key::Space, _, Action::Press, _) => {
-                    sphere_count += 1;
-                    let new_sphere = Sphere::new(cam_pos, 5.0)
-                        .color(Color::rgb(
-                            (sphere_count * 97 % 255) as f32 / 255.0,
-                            (sphere_count * 53 % 255) as f32 / 255.0,
-                            (sphere_count * 179 % 255) as f32 / 255.0,
-                        ));
-                    sdf = sdf.add(new_sphere).optimize_bounds();
-                    sdf_dirty = true;
-                    println!("Added sphere #{} at {}", sphere_count, cam_pos);
-                }
-                // R: reset to initial scene
-                glfw::WindowEvent::Key(Key::R, _, Action::Press, _) => {
-                    sdf = build_initial_scene();
-                    sphere_count = 0;
-                    sdf_dirty = true;
-                    println!("Reset scene");
                 }
                 _ => {}
             }
@@ -277,19 +289,19 @@ fn main() {
             yaw.cos() * pitch.cos(),
         ).normalize();
         let up = Vec3::new(0.0, 1.0, 0.0);
-        let right = dir.cross(up).normalize();
+        let right = up.cross(dir).normalize();
 
         // WASD movement
-        if window.get_key(Key::W) == Action::Press {
+        if key_w {
             cam_pos = cam_pos + dir * move_speed;
         }
-        if window.get_key(Key::S) == Action::Press {
+        if key_s {
             cam_pos = cam_pos - dir * move_speed;
         }
-        if window.get_key(Key::A) == Action::Press {
+        if key_a {
             cam_pos = cam_pos - right * move_speed;
         }
-        if window.get_key(Key::D) == Action::Press {
+        if key_d {
             cam_pos = cam_pos + right * move_speed;
         }
 
