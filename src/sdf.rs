@@ -1085,7 +1085,7 @@ impl fmt::Display for DistanceFieldEnum{
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use kiss3d::nalgebra::ComplexField;
+    use nalgebra::ComplexField;
     use rand::{rngs::{ThreadRng, StdRng}, SeedableRng};
 
     use super::*;
