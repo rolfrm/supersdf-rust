@@ -132,8 +132,8 @@ pub trait DistanceField {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Sphere {
-    center: Vec3,
-    radius: f32
+    pub(crate) center: Vec3,
+    pub(crate) radius: f32
 }
 
 impl Sphere {
@@ -184,8 +184,8 @@ fn vec3_max(a: Vec3, b: Vec3) -> Vec3 {
 
 #[derive(Clone, PartialEq, Debug, Hash)]
 pub struct Aabb {
-    radius: Vec3,
-    center: Vec3
+    pub(crate) radius: Vec3,
+    pub(crate) center: Vec3
 }
 
 impl Aabb {
@@ -212,10 +212,10 @@ impl Into<DistanceFieldEnum> for Aabb {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Gradient {
-    p1: Vec3,
-    p2: Vec3,
-    c1: Color,
-    c2: Color,
+    pub(crate) p1: Vec3,
+    pub(crate) p2: Vec3,
+    pub(crate) c1: Color,
+    pub(crate) c2: Color,
 }
 
 impl Gradient {
@@ -247,9 +247,9 @@ impl Gradient {
 #[derive(Clone, Debug)]
 pub struct Noise {
     noise: Rc<Perlin>,
-    seed: u32,
-    c1: Color,
-    c2: Color
+    pub(crate) seed: u32,
+    pub(crate) c1: Color,
+    pub(crate) c2: Color
 }
 
 
@@ -306,8 +306,8 @@ impl Noise {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Add {
-    left: Rc<DistanceFieldEnum>,
-    right: Rc<DistanceFieldEnum>,
+    pub(crate) left: Rc<DistanceFieldEnum>,
+    pub(crate) right: Rc<DistanceFieldEnum>,
     size : u32,
     bounds: Sphere,
     hash: u64
@@ -405,9 +405,9 @@ impl DistanceField for Add {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Subtract {
-     left : Rc<DistanceFieldEnum>,
-     subtract: Rc<DistanceFieldEnum>,
-     k : f32
+     pub(crate) left : Rc<DistanceFieldEnum>,
+     pub(crate) subtract: Rc<DistanceFieldEnum>,
+     pub(crate) k : f32
 }
 
 fn f32mixf( x : f32,  y : f32,  a : f32) -> f32 { x * (1.0 - a) + y * a }

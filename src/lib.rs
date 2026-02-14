@@ -11,6 +11,7 @@ use sdf::*;
 use sdf_scene::*;
 use app_state::*;
 mod csg;
+pub mod sdf_compiler;
 use kiss3d::light::Light;
 
 use kiss3d::window::{Window};

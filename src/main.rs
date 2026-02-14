@@ -8,6 +8,7 @@ mod vec3;
 mod vec2;
 mod color;
 mod csg;
+mod sdf_compiler;
 use color::*;
 use sdf::*;
 use sdf_scene::*;
