@@ -260,7 +260,7 @@ fn main() {
                     ).normalize();
                     let cam_up = Vec3::new(0.0, 1.0, 0.0);
                     let cam_right = cam_up.cross(cam_dir).normalize();
-                    let cam_up2 = cam_dir.cross(cam_right);
+                    let cam_up2 = cam_right.cross(cam_dir);
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
