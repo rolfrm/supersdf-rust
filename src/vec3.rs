@@ -1,5 +1,5 @@
 use std::{ops::{Add, Sub, Mul, Div, Neg}, fmt, hash::Hasher, hash::Hash, iter::Sum};
-use kiss3d::nalgebra::{Point3, Vector3};
+use nalgebra::{Point3, Vector3};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Vec3{
