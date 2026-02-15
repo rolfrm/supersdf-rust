@@ -213,6 +213,50 @@ fn vec3_max(a: Vec3, b: Vec3) -> Vec3 {
     Vec3::new(f32::max(a.x, b.x), f32::max(a.y, b.y), f32::max(a.z, b.z))
 }
 
+fn vec3_min(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(f32::min(a.x, b.x), f32::min(a.y, b.y), f32::min(a.z, b.z))
+}
+
+#[derive(Clone, Debug)]
+pub struct AabbBounds {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl AabbBounds {
+    pub fn new(min: Vec3, max: Vec3) -> AabbBounds {
+        AabbBounds { min, max }
+    }
+
+    pub fn infinite() -> AabbBounds {
+        AabbBounds {
+            min: Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
+            max: Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
+        }
+    }
+
+    pub fn is_finite(&self) -> bool {
+        self.min.x.is_finite() && self.min.y.is_finite() && self.min.z.is_finite()
+            && self.max.x.is_finite() && self.max.y.is_finite() && self.max.z.is_finite()
+    }
+
+    pub fn union(&self, other: &AabbBounds) -> AabbBounds {
+        AabbBounds {
+            min: vec3_min(self.min, other.min),
+            max: vec3_max(self.max, other.max),
+        }
+    }
+
+    /// Test if this AABB overlaps a cube defined by center and half-size.
+    pub fn overlaps_aabb(&self, box_center: Vec3, box_half: f32) -> bool {
+        let bmin = box_center - Vec3::new(box_half, box_half, box_half);
+        let bmax = box_center + Vec3::new(box_half, box_half, box_half);
+        self.min.x <= bmax.x && self.max.x >= bmin.x
+            && self.min.y <= bmax.y && self.max.y >= bmin.y
+            && self.min.z <= bmax.z && self.max.z >= bmin.z
+    }
+}
+
 #[derive(Clone, PartialEq, Debug, Hash)]
 pub struct Aabb {
     pub(crate) radius: Vec3,
@@ -701,6 +745,28 @@ impl DistanceFieldEnum {
         }
     }
 
+    pub fn calculate_aabb_bounds(&self) -> AabbBounds {
+        match self {
+            DistanceFieldEnum::Primitive(p) => match p {
+                Primitive::Sphere(s) => {
+                    let r = Vec3::new(s.radius, s.radius, s.radius);
+                    AabbBounds::new(s.center - r, s.center + r)
+                }
+                Primitive::Aabb(aabb) => {
+                    AabbBounds::new(aabb.center - aabb.radius, aabb.center + aabb.radius)
+                }
+            },
+            DistanceFieldEnum::Empty => AabbBounds::infinite(),
+            DistanceFieldEnum::Coloring(_, inner) => inner.calculate_aabb_bounds(),
+            DistanceFieldEnum::Add(add) => {
+                let left = add.left.calculate_aabb_bounds();
+                let right = add.right.calculate_aabb_bounds();
+                left.union(&right)
+            }
+            DistanceFieldEnum::Subtract(sub) => sub.left.calculate_aabb_bounds(),
+        }
+    }
+
     pub fn calculate_sphere_bounds2(&self, cache: &mut HashMap<DistanceFieldEnum, Sphere>) -> Sphere {
         if let Some(x) = cache.get(self) {
             return x.clone();
@@ -812,6 +878,48 @@ impl DistanceFieldEnum {
         }
         let x = dv / l;
         return x;
+    }
+
+    pub fn equals(&self, other: &Self) -> bool {
+        return match self {
+            DistanceFieldEnum::Primitive(s) => {
+                if let DistanceFieldEnum::Primitive(s2) = other {
+                    return s.eq(s2);
+                }
+                false
+            },
+            DistanceFieldEnum::Add(a) => {
+                if let DistanceFieldEnum::Add(b) = other {
+                    return
+                        (Rc::<DistanceFieldEnum>::ptr_eq(&a.left, &b.left)
+                         && Rc::<DistanceFieldEnum>::ptr_eq(&a.right, &b.right))
+                        || (a.left.equals(&b.left) &&  a.right.equals(&b.right));
+                }
+                false
+            },
+            DistanceFieldEnum::Coloring(a, i) => {
+                if let DistanceFieldEnum::Coloring(b, i2) = other {
+                    return  b.eq(&b) && i.equals(i2);
+                }
+                false
+            },
+            DistanceFieldEnum::Subtract(a) => {
+                if let DistanceFieldEnum::Subtract(b) = other {
+                    return Rc::<DistanceFieldEnum>::ptr_eq(&a.left,&b.left) && 
+                        Rc::<DistanceFieldEnum>::ptr_eq(&a.subtract,&b.subtract);
+                }
+                false
+                
+            },
+            
+            DistanceFieldEnum::Empty => {
+                if let DistanceFieldEnum::Empty = other {
+                    return true;
+                }
+                return false;
+                
+            },
+        }
     }
 
     pub fn ref_eq(&self, other: &Self) -> bool {
@@ -1303,6 +1411,7 @@ mod tests {
             let pos = center + offset;
             let a = ground_truth.distance(pos);
             let b = optimized_sdf.distance(pos);
+            println!("{} vs {}", (b - a) / a,  e);
             assert!((b - a) / a < e);
         }
     }
@@ -1312,7 +1421,7 @@ mod tests {
         let sdf = DistanceFieldEnum::Empty
             .insert_2(Sphere::new(Vec3::new(0.0, 0.0, 0.0), 1.0).color(Color::RED))
             .insert_2(Sphere::new(Vec3::new(2.0, 0.0, 0.0), 1.0).color(Color::BLUE));
-        let sdf : DistanceFieldEnum = Subtract::new(sdf, Sphere::new(Vec3::new(3.0, 0.0, 0.0), 1.0), 0.0).into();
+        let sdf : DistanceFieldEnum = Subtract::new(sdf, Sphere::new(Vec3::new(3.0, 0.0, 0.0), 1.0), 0.1).into();
 
         let opt = sdf.optimize_bounds().optimize_bounds();
         println!("Opt: {}", opt);

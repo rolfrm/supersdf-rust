@@ -20,6 +20,7 @@ use std::hash::{Hash, Hasher};
 use std::ptr;
 use std::rc::Rc;
 use std::str;
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 // ---------- Octree constants ----------
 const MIN_NODE_SIZE: f32 = 5.0;
@@ -155,6 +156,49 @@ fn mat4_block_model(block_min: Vec3, size: f32) -> Mat4 {
     ]
 }
 
+// ---------- Frustum culling ----------
+
+struct Frustum {
+    planes: [[f32; 4]; 6],
+}
+
+impl Frustum {
+    /// Extract frustum planes from a column-major view-projection matrix.
+    fn from_vp(vp: &Mat4) -> Frustum {
+        // Row i of column-major matrix: vp[i], vp[i+4], vp[i+8], vp[i+12]
+        let raw = [
+            [vp[3]+vp[0], vp[7]+vp[4], vp[11]+vp[8],  vp[15]+vp[12]], // Left
+            [vp[3]-vp[0], vp[7]-vp[4], vp[11]-vp[8],  vp[15]-vp[12]], // Right
+            [vp[3]+vp[1], vp[7]+vp[5], vp[11]+vp[9],  vp[15]+vp[13]], // Bottom
+            [vp[3]-vp[1], vp[7]-vp[5], vp[11]-vp[9],  vp[15]-vp[13]], // Top
+            [vp[3]+vp[2], vp[7]+vp[6], vp[11]+vp[10], vp[15]+vp[14]], // Near
+            [vp[3]-vp[2], vp[7]-vp[6], vp[11]-vp[10], vp[15]-vp[14]], // Far
+        ];
+        let mut planes = [[0.0f32; 4]; 6];
+        for i in 0..6 {
+            let len = (raw[i][0] * raw[i][0] + raw[i][1] * raw[i][1] + raw[i][2] * raw[i][2]).sqrt();
+            if len > 0.0 {
+                let inv = 1.0 / len;
+                planes[i] = [raw[i][0] * inv, raw[i][1] * inv, raw[i][2] * inv, raw[i][3] * inv];
+            }
+        }
+        Frustum { planes }
+    }
+
+    /// Returns true if a cube (center + half-extent) is entirely outside the frustum.
+    fn cull_aabb(&self, center: Vec3, half: f32) -> bool {
+        for p in &self.planes {
+            // Effective radius: max projection of the box onto the plane normal
+            let r = half * (p[0].abs() + p[1].abs() + p[2].abs());
+            let dist = p[0] * center.x + p[1] * center.y + p[2] * center.z + p[3];
+            if dist + r < 0.0 {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 // ---------- Block program ----------
 
 struct BlockProgram {
@@ -255,9 +299,9 @@ impl Octree {
             return OctreeNode::Empty;
         }
 
-        // Bounding sphere vs AABB check — fast cull using the SDF's bounding structure
-        let bounds = optimized.calculate_sphere_bounds();
-        if bounds.radius.is_finite() && !bounds.overlaps_aabb(center, size / 2.0) {
+        // AABB vs AABB check — tighter cull than sphere bounds
+        let bounds = optimized.calculate_aabb_bounds();
+        if bounds.is_finite() && !bounds.overlaps_aabb(center, size / 2.0) {
             return OctreeNode::Empty;
         }
 
@@ -270,7 +314,7 @@ impl Octree {
         match old_node {
             OctreeNode::Leaf { optimized_sdf, .. }
             | OctreeNode::Branch { optimized_sdf, .. }
-                if Rc::ptr_eq(&optimized, optimized_sdf) || *optimized == **optimized_sdf =>
+                if optimized.equals( optimized_sdf)  =>
             {
                 // Collect all hashes from the reused subtree so we don't delete their programs
                 Self::collect_hashes(old_node, to_compile);
@@ -281,7 +325,7 @@ impl Octree {
         }
 
         // Leaf condition: stop subdividing at min size or <=1 primitive
-        if (size <= MIN_NODE_SIZE && optimized.count_primitives() <= 6) || optimized.count_primitives() <= 4 {
+        if (size <= MIN_NODE_SIZE && optimized.count_primitives() <= 6) || optimized.count_primitives() <= 3 {
             let hash = optimized.topology_hash();
             to_compile.entry(hash).or_insert_with(|| optimized.clone());
             let params = sdf_compiler::collect_block_sdf_params(&optimized);
@@ -331,7 +375,7 @@ impl Octree {
 
         // Only one child with simple SDF → collapse to a leaf
         // (must use parent's center/size/optimized so change detection matches next rebuild)
-        if non_empty_count == 1 && optimized.count_primitives() <= 1 {
+        if non_empty_count == 1 && optimized.count_primitives() <= 3 {
             let hash = optimized.topology_hash();
             to_compile.entry(hash).or_insert_with(|| optimized.clone());
             let params = sdf_compiler::collect_block_sdf_params(&optimized);
@@ -346,14 +390,14 @@ impl Octree {
 
         // Collapse: if every non-empty child is a leaf with the same topology hash,
         // merge back into one leaf at the parent size.
-        let first_hash = children.iter().flatten().find_map(|c| match c.as_ref() {
-            OctreeNode::Leaf { topology_hash, .. } => Some(*topology_hash),
+        let first_node = children.iter().flatten().find_map(|c| match c.as_ref() {
+            OctreeNode::Leaf {optimized_sdf, .. } => Some(optimized_sdf.clone()),
             _ => None,
         });
-        if let Some(fh) = first_hash {
-            let can_collapse = optimized.count_primitives() < 2
+        if let Some(fh) = first_node {
+            let can_collapse = optimized.count_primitives() < 5
                 && children.iter().all(|c| match c {
-                    Some(rc) => matches!(rc.as_ref(), OctreeNode::Leaf { topology_hash, .. } if *topology_hash == fh),
+                    Some(rc) => matches!(rc.as_ref(), OctreeNode::Leaf { optimized_sdf, .. } if optimized_sdf.equals(&fh)),
                     None => true,
                 });
             if can_collapse {
@@ -468,40 +512,24 @@ impl Octree {
 // ---------- Scene ----------
 
 fn build_initial_scene() -> DistanceFieldEnum {
-    
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
-    /*   
+    let mut rng = StdRng::seed_from_u64(42);
 
-        for i in 0..8 {
-            let offset = (i - 4) as f32 * 50.0;
-            let s2: DistanceFieldEnum = Sphere::new(Vec3::new(20.0 + offset, 0.0, 0.0), 10.0).into();
-            let s2 = s2.colored(Color::rgb(0.0, 1.0, 0.0));
-            sdf  = Add::new(sdf, s2).into();
-            
-            let s3: DistanceFieldEnum = Sphere::new(Vec3::new(0.0 + offset, 0.0, 20.0), 10.0).into();
-            let s3 = s3.colored(Color::rgb(0.0, 1.0, 1.0));
-             sdf = Add::new(sdf, s3).into();
-            
-            let s4: DistanceFieldEnum = Sphere::new(Vec3::new(0.0 + offset, 20.0, 0.0), 10.0).into();
-            let s4 = s4.colored(Color::rgb(1.0, 1.0, 0.0));
-            sdf = Add::new(sdf, s4).into();
-            
-            let s5: DistanceFieldEnum = Sphere::new(Vec3::new(0.0 + offset, -20.0, 0.0), 10.0).into();
-            let s5 = s5.colored(Color::rgb(1.0, 0.0, 1.0));
-            sdf = Add::new(sdf, s5).into();
-            
-            let sub = Vec3::new(12.840058, 74.62816, 8.423447);
-            sdf = sdf.subtract(DistanceFieldEnum::sphere(sub, 2.0));
-
-
-}
-     */
-    for i in (-100..100).step_by(20) {
-        for j in (-100..100).step_by(20) {
-            for h in (-30..30).step_by(20) {
-    sdf = Add::new(sdf, DistanceFieldEnum::sphere(Vec3::new(i as f32, j as f32, h as f32), 5.0).colored(Color::rgb(0.0, 1.0, 0.0))).into();
-    }}}
-    return sdf.optimize_bounds()
+    for i in (-200..200).step_by(10) {
+        for j in (-200..200).step_by(10) {
+            let x = i as f32 + rng.gen_range(-2.0..2.0);
+            let z = j as f32 + rng.gen_range(-2.0..2.0);
+            let y = -20.0 + rng.gen_range(-2.0..2.0) + j as f32 * 0.2;
+            let r = rng.gen_range(8.0..10.0);
+            let color = Color::rgb(
+                rng.gen_range(0.2..0.22),
+                rng.gen_range(0.9..1.0),
+                rng.gen_range(0.2..0.22),
+            );
+            sdf = Add::new(sdf, DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color)).into();
+        }
+    }
+    sdf.optimize_bounds()
 }
 
 fn main() {
@@ -664,7 +692,7 @@ fn main() {
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
-                        sdf = sdf.add(DistanceFieldEnum::sphere(hit_pos, 5.0));
+                        sdf = sdf.subtract(DistanceFieldEnum::sphere(hit_pos, 5.0));
                         sdf = sdf.optimize_bounds();
                         sdf_dirty = true;
                         println!("Subtracted sphere at {}", hit_pos);
@@ -736,16 +764,18 @@ fn main() {
             gl::ClearColor(0.25, 0.35, 0.55, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
             gl::Enable(gl::DEPTH_TEST);
-            gl::Disable(gl::CULL_FACE);
+            gl::Enable(gl::CULL_FACE);
 
             gl::BindVertexArray(vao);
 
-            // Collect leaves from octree and render each one
+            // Frustum culling + front-to-back traversal
+            let frustum = Frustum::from_vp(&vp);
             let mut leaf_stack: Vec<&OctreeNode> = vec![&octree.root];
             while let Some(node) = leaf_stack.pop() {
                 match node {
                     OctreeNode::Empty => {}
                     OctreeNode::Leaf { center, size, topology_hash, params, .. } => {
+                        if frustum.cull_aabb(*center, *size / 2.0) { continue; }
                         if let Some(prog) = octree.programs.get(topology_hash) {
                             let half = *size / 2.0;
                             let block_min = *center - Vec3::new(half, half, half);
@@ -766,9 +796,17 @@ fn main() {
                             gl::DrawArrays(gl::TRIANGLES, 0, 36);
                         }
                     }
-                    OctreeNode::Branch { children, .. } => {
-                        for child in children.iter().flatten() {
-                            leaf_stack.push(child);
+                    OctreeNode::Branch { center: bc, size, children, .. } => {
+                        if frustum.cull_aabb(*bc, *size / 2.0) { continue; }
+                        // Determine nearest octant to camera using sign bits
+                        let near = ((cam_pos.x > bc.x) as usize)
+                            | (((cam_pos.y > bc.y) as usize) << 1)
+                            | (((cam_pos.z > bc.z) as usize) << 2);
+                        // Push farthest first (popcount 3→0) so nearest pops first from stack
+                        for &mask in &[7usize, 6, 5, 3, 4, 2, 1, 0] {
+                            if let Some(ref child) = children[near ^ mask] {
+                                leaf_stack.push(child.as_ref());
+                            }
                         }
                     }
                 }
