@@ -473,8 +473,9 @@ impl DistanceFieldEnum {
     pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>, min_d : f32) -> Rc<DistanceFieldEnum> {
         let d1 = add.left.distance(block_center);
         let d2 = add.right.distance(block_center);
-        let left_opt = add.left.optimized_for_block2(block_center, size, cache, f32::min(d1, f32::min(d2, min_d)));
-        let right_opt = add.right.optimized_for_block2(block_center, size, cache, f32::min(d1, f32::min(d2, min_d)));
+        let new_min_d = (f32::min(d1, f32::min(d2, min_d)) * 10.0).floor() / 10.0;
+        let left_opt = add.left.optimized_for_block2(block_center, size, cache, new_min_d);
+        let right_opt = add.right.optimized_for_block2(block_center, size, cache, new_min_d);
         
         let left_d = d1;
         let right_d = right_opt.distance(block_center);
@@ -491,6 +492,12 @@ impl DistanceFieldEnum {
             if right_d < left_d {
                 return right_opt;
             }
+            return left_opt;
+        }
+        if matches!(left_opt.as_ref(), DistanceFieldEnum::Empty) {
+            return right_opt;
+        }
+        if matches!(right_opt.as_ref(), DistanceFieldEnum::Empty) {
             return left_opt;
         }
         if left_opt.eq(&add.left) && right_opt.eq(&add.right) {
@@ -536,6 +543,9 @@ impl DistanceFieldEnum {
             },
             DistanceFieldEnum::Coloring(c, i) => {
                 let opt = i.optimized_for_block2( block_center, size, cache, min_d);
+                if matches!(opt.as_ref(), DistanceFieldEnum::Empty) {
+                    return Rc::new(DistanceFieldEnum::Empty);
+                }
                 if opt.eq(i) {
                     return Rc::new(self.clone());
                 }

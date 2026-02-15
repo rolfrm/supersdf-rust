@@ -13,17 +13,34 @@ use vec3::Vec3;
 
 use gl::types::*;
 use glfw::{Action, Context, Key, MouseButton};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
+use std::hash::{Hash, Hasher};
 use std::ptr;
+use std::rc::Rc;
 use std::str;
 
-const VERTEX_SHADER_SRC: &str = r#"
+// ---------- Grid constants ----------
+const GRID_N: usize = 10;
+const GRID_MIN: f32 = -62.5;
+const BLOCK_SIZE: f32 = 25.0;
+
+// ---------- Block vertex shader ----------
+const BLOCK_VERTEX_SHADER_SRC: &str = r#"
 #version 330 core
-layout (location = 0) in vec2 aPos;
+layout (location = 0) in vec3 aPos;
+uniform mat4 u_model;
+uniform mat4 u_vp;
+out vec3 v_world_pos;
 void main() {
-    gl_Position = vec4(aPos, 0.0, 1.0);
+    vec4 world = u_model * vec4(aPos, 1.0);
+    v_world_pos = world.xyz;
+    gl_Position = u_vp * world;
 }
 "#;
+
+// ---------- GL helpers ----------
 
 fn compile_gl_shader(src: &str, shader_type: GLenum) -> GLuint {
     unsafe {
@@ -41,6 +58,7 @@ fn compile_gl_shader(src: &str, shader_type: GLenum) -> GLuint {
             gl::GetShaderInfoLog(shader, len, ptr::null_mut(), buf.as_mut_ptr() as *mut GLchar);
             let msg = str::from_utf8(&buf).unwrap_or("(invalid utf8)");
             eprintln!("Shader compilation failed:\n{}", msg);
+            eprintln!("Shader: {}", src);
             gl::DeleteShader(shader);
             return 0;
         }
@@ -76,20 +94,72 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
     }
 }
 
-struct ShaderProgram {
-    id: GLuint,
-    u_resolution: GLint,
-    u_camera_pos: GLint,
-    u_camera_dir: GLint,
-    u_camera_up: GLint,
+// ---------- Mat4 helpers (column-major) ----------
+
+type Mat4 = [f32; 16];
+
+fn mat4_perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
+    let f = 1.0 / (fovy / 2.0).tan();
+    let nf = near - far;
+    [
+        f / aspect, 0.0, 0.0, 0.0,
+        0.0, f, 0.0, 0.0,
+        0.0, 0.0, (far + near) / nf, -1.0,
+        0.0, 0.0, 2.0 * far * near / nf, 0.0,
+    ]
 }
 
-/// Compile an SDF tree into a GL shader program. Returns None on failure.
-fn build_sdf_program(sdf: &DistanceFieldEnum) -> Option<ShaderProgram> {
-    let frag_src = sdf_compiler::compile_sdf_shader(sdf);
-    println!("--- Fragment Shader ---\n{}\n--- End Shader ---", frag_src);
+fn mat4_view(eye: Vec3, dir: Vec3, world_up: Vec3) -> Mat4 {
+    let right = world_up.cross(dir).normalize();
+    let up = dir.cross(right);
+    let tx = right.dot(eye);
+    let ty = up.dot(eye);
+    let tz = dir.dot(eye);
+    [
+        right.x, up.x, -dir.x, 0.0,
+        right.y, up.y, -dir.y, 0.0,
+        right.z, up.z, -dir.z, 0.0,
+        -tx, -ty, tz, 1.0,
+    ]
+}
 
-    let vs = compile_gl_shader(VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
+fn mat4_mul(a: &Mat4, b: &Mat4) -> Mat4 {
+    let mut out = [0.0f32; 16];
+    for col in 0..4 {
+        for row in 0..4 {
+            let mut sum = 0.0f32;
+            for k in 0..4 {
+                sum += a[k * 4 + row] * b[col * 4 + k];
+            }
+            out[col * 4 + row] = sum;
+        }
+    }
+    out
+}
+
+fn mat4_block_model(block_min: Vec3, size: f32) -> Mat4 {
+    [
+        size, 0.0, 0.0, 0.0,
+        0.0, size, 0.0, 0.0,
+        0.0, 0.0, size, 0.0,
+        block_min.x, block_min.y, block_min.z, 1.0,
+    ]
+}
+
+// ---------- Block program ----------
+
+struct BlockProgram {
+    id: GLuint,
+    u_vp: GLint,
+    u_model: GLint,
+    u_camera_pos: GLint,
+    u_block_min: GLint,
+    u_block_max: GLint,
+}
+
+fn build_block_program(sdf: &DistanceFieldEnum) -> Option<BlockProgram> {
+    let frag_src = sdf_compiler::compile_block_sdf_shader(sdf);
+    let vs = compile_gl_shader(BLOCK_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
     if vs == 0 { return None; }
 
     let fs = compile_gl_shader(&frag_src, gl::FRAGMENT_SHADER);
@@ -102,34 +172,129 @@ fn build_sdf_program(sdf: &DistanceFieldEnum) -> Option<ShaderProgram> {
     if id == 0 { return None; }
 
     unsafe {
-        gl::UseProgram(id);
-        Some(ShaderProgram {
+        Some(BlockProgram {
             id,
-            u_resolution: gl::GetUniformLocation(id, CString::new("u_resolution").unwrap().as_ptr()),
+            u_vp: gl::GetUniformLocation(id, CString::new("u_vp").unwrap().as_ptr()),
+            u_model: gl::GetUniformLocation(id, CString::new("u_model").unwrap().as_ptr()),
             u_camera_pos: gl::GetUniformLocation(id, CString::new("u_camera_pos").unwrap().as_ptr()),
-            u_camera_dir: gl::GetUniformLocation(id, CString::new("u_camera_dir").unwrap().as_ptr()),
-            u_camera_up: gl::GetUniformLocation(id, CString::new("u_camera_up").unwrap().as_ptr()),
+            u_block_min: gl::GetUniformLocation(id, CString::new("u_block_min").unwrap().as_ptr()),
+            u_block_max: gl::GetUniformLocation(id, CString::new("u_block_max").unwrap().as_ptr()),
         })
     }
 }
+
+// ---------- Grid ----------
+
+struct Grid {
+    slot_hashes: Vec<u64>,
+    programs: HashMap<u64, BlockProgram>,
+}
+
+impl Grid {
+    fn new() -> Grid {
+        Grid {
+            slot_hashes: vec![0u64; GRID_N * GRID_N * GRID_N],
+            programs: HashMap::new(),
+        }
+    }
+
+    fn rebuild(&mut self, sdf: &DistanceFieldEnum) {
+        let mut cache = HashSet::new();
+        let mut new_hashes = vec![0u64; GRID_N * GRID_N * GRID_N];
+        let mut to_compile: HashMap<u64, Rc<DistanceFieldEnum>> = HashMap::new();
+        let mut empty_count = 0u32;
+
+        // Phase 1: optimize all blocks, collect unique hashes
+        for ix in 0..GRID_N {
+            for iy in 0..GRID_N {
+                for iz in 0..GRID_N {
+                    let idx = ix * GRID_N * GRID_N + iy * GRID_N + iz;
+                    let center = Vec3::new(
+                        GRID_MIN + (ix as f32 + 0.5) * BLOCK_SIZE,
+                        GRID_MIN + (iy as f32 + 0.5) * BLOCK_SIZE,
+                        GRID_MIN + (iz as f32 + 0.5) * BLOCK_SIZE,
+                    );
+                    let optimized = sdf.optimized_for_block(center, BLOCK_SIZE, &mut cache);
+                    let half_diag = BLOCK_SIZE * 0.5 * 1.7320508;
+                    let block_empty = matches!(optimized.as_ref(), DistanceFieldEnum::Empty)
+                        || optimized.distance(center) > half_diag;
+
+                    if block_empty {
+                        empty_count += 1;
+                        continue;
+                    }
+
+                    let mut hasher = DefaultHasher::new();
+                    optimized.hash(&mut hasher);
+                    let hash = hasher.finish();
+                    new_hashes[idx] = hash;
+                    to_compile.entry(hash).or_insert(optimized);
+                }
+            }
+        }
+
+        // Phase 2: delete programs no longer needed
+        let needed: HashSet<u64> = new_hashes.iter().copied().filter(|&h| h != 0).collect();
+        self.programs.retain(|hash, prog| {
+            if needed.contains(hash) {
+                true
+            } else {
+                unsafe { gl::DeleteProgram(prog.id); }
+                false
+            }
+        });
+
+        // Phase 3: compile only new unique programs
+        let mut compiled = 0u32;
+        let mut reused = 0u32;
+        for (hash, optimized) in &to_compile {
+            if self.programs.contains_key(hash) {
+                reused += 1;
+            } else {
+                match build_block_program(optimized) {
+                    Some(prog) => {
+                        self.programs.insert(*hash, prog);
+                        compiled += 1;
+                    }
+                    None => {
+                        eprintln!("Failed to compile shader (hash {})", hash);
+                    }
+                }
+            }
+        }
+
+        self.slot_hashes = new_hashes;
+        let active = self.slot_hashes.iter().filter(|&&h| h != 0).count();
+        println!("Grid rebuild: {} active blocks, {} unique ({} compiled, {} reused), {} empty",
+            active, to_compile.len(), compiled, reused, empty_count);
+    }
+
+    fn cleanup(&mut self) {
+        for (_, prog) in self.programs.drain() {
+            unsafe { gl::DeleteProgram(prog.id); }
+        }
+    }
+}
+
+// ---------- Scene ----------
 
 fn build_initial_scene() -> DistanceFieldEnum {
     let s1: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 10.0).into();
     let s1 = s1.colored(Color::rgb(1.0, 0.0, 0.0));
 
-    let s2: DistanceFieldEnum = Sphere::new(Vec3::new(50.0, 0.0, 0.0), 10.0).into();
+    let s2: DistanceFieldEnum = Sphere::new(Vec3::new(100.0, 0.0, 0.0), 10.0).into();
     let s2 = s2.colored(Color::rgb(0.0, 1.0, 0.0));
     let sdf: DistanceFieldEnum = Add::new(s1, s2).into();
 
-    let s3: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 50.0), 10.0).into();
+    let s3: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 100.0), 10.0).into();
     let s3 = s3.colored(Color::rgb(0.0, 1.0, 1.0));
     let sdf: DistanceFieldEnum = Add::new(sdf, s3).into();
 
-    let s4: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 50.0, 0.0), 10.0).into();
+    let s4: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 100.0, 0.0), 10.0).into();
     let s4 = s4.colored(Color::rgb(1.0, 1.0, 0.0));
     let sdf: DistanceFieldEnum = Add::new(sdf, s4).into();
 
-    let s5: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, -50.0, 0.0), 10.0).into();
+    let s5: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, -100.0, 0.0), 10.0).into();
     let s5 = s5.colored(Color::rgb(1.0, 0.0, 1.0));
     let sdf: DistanceFieldEnum = Add::new(sdf, s5).into();
 
@@ -163,14 +328,26 @@ fn main() {
 
     gl::load_with(|symbol| window.get_proc_address(symbol) as *const _);
 
-    // Fullscreen quad (two triangles covering clip space)
-    let vertices: [f32; 12] = [
-        -1.0, -1.0,
-         1.0, -1.0,
-         1.0,  1.0,
-        -1.0, -1.0,
-         1.0,  1.0,
-        -1.0,  1.0,
+    // Unit cube [0,1]^3 - 36 vertices (12 triangles)
+    let vertices: [f32; 108] = [
+        // Front (z=1)
+        0.0,0.0,1.0, 1.0,0.0,1.0, 1.0,1.0,1.0,
+        0.0,0.0,1.0, 1.0,1.0,1.0, 0.0,1.0,1.0,
+        // Back (z=0)
+        1.0,0.0,0.0, 0.0,0.0,0.0, 0.0,1.0,0.0,
+        1.0,0.0,0.0, 0.0,1.0,0.0, 1.0,1.0,0.0,
+        // Left (x=0)
+        0.0,0.0,0.0, 0.0,0.0,1.0, 0.0,1.0,1.0,
+        0.0,0.0,0.0, 0.0,1.0,1.0, 0.0,1.0,0.0,
+        // Right (x=1)
+        1.0,0.0,1.0, 1.0,0.0,0.0, 1.0,1.0,0.0,
+        1.0,0.0,1.0, 1.0,1.0,0.0, 1.0,1.0,1.0,
+        // Top (y=1)
+        0.0,1.0,1.0, 1.0,1.0,1.0, 1.0,1.0,0.0,
+        0.0,1.0,1.0, 1.0,1.0,0.0, 0.0,1.0,0.0,
+        // Bottom (y=0)
+        0.0,0.0,0.0, 1.0,0.0,0.0, 1.0,0.0,1.0,
+        0.0,0.0,0.0, 1.0,0.0,1.0, 0.0,0.0,1.0,
     ];
 
     let (mut vao, mut vbo) = (0u32, 0u32);
@@ -187,16 +364,15 @@ fn main() {
             gl::STATIC_DRAW,
         );
         gl::VertexAttribPointer(
-            0, 2, gl::FLOAT, gl::FALSE,
-            (2 * std::mem::size_of::<f32>()) as GLsizei,
+            0, 3, gl::FLOAT, gl::FALSE,
+            (3 * std::mem::size_of::<f32>()) as GLsizei,
             ptr::null(),
         );
         gl::EnableVertexAttribArray(0);
         gl::BindVertexArray(0);
     }
 
-    // Initial shader program (will be built on first frame via dirty flag)
-    let mut program: Option<ShaderProgram> = None;
+    let mut grid = Grid::new();
 
     // Camera state
     let mut cam_pos = Vec3::new(0.0, 0.0, -60.0);
@@ -207,7 +383,6 @@ fn main() {
     let move_speed = 1.0f32;
     let mouse_sensitivity = 0.002f32;
 
-    // Track key held state via events (more reliable than get_key polling)
     let mut key_w = false;
     let mut key_a = false;
     let mut key_s = false;
@@ -262,7 +437,6 @@ fn main() {
                     let cam_right = cam_up.cross(cam_dir).normalize();
                     let cam_up2 = cam_dir.cross(cam_right);
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
-                    
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
                         sdf = sdf.subtract(DistanceFieldEnum::sphere(hit_pos, 5.0));
@@ -290,22 +464,10 @@ fn main() {
             }
         }
 
-        // Recompile shader if SDF changed
+        // Recompile shaders if SDF changed
         if sdf_dirty {
             sdf_dirty = false;
-            if let Some(old) = &program {
-                unsafe { gl::DeleteProgram(old.id); }
-            }
-            match build_sdf_program(&sdf) {
-                Some(p) => {
-                    println!("Shader recompiled successfully");
-                    program = Some(p);
-                }
-                None => {
-                    eprintln!("Failed to compile shader for current SDF");
-                    program = None;
-                }
-            }
+            grid.rebuild(&sdf);
         }
 
         // Camera direction from yaw/pitch
@@ -332,29 +494,57 @@ fn main() {
         }
 
         let (w, h) = window.get_framebuffer_size();
+        let aspect = w as f32 / h as f32;
+
+        // Build VP matrix: FOV matches old shader's focal length of 1.0
+        let fovy = 2.0 * (0.5f32).atan();
+        let view = mat4_view(cam_pos, dir, up);
+        let proj = mat4_perspective(fovy, aspect, 0.1, 500.0);
+        let vp = mat4_mul(&proj, &view);
 
         unsafe {
-            gl::ClearColor(0.0, 0.0, 0.0, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT);
+            // Sky background
+            gl::ClearColor(0.25, 0.35, 0.55, 1.0);
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+            gl::Enable(gl::DEPTH_TEST);
+            gl::Disable(gl::CULL_FACE);
 
-            if let Some(prog) = &program {
-                gl::UseProgram(prog.id);
-                gl::Uniform2f(prog.u_resolution, w as f32, h as f32);
-                gl::Uniform3f(prog.u_camera_pos, cam_pos.x, cam_pos.y, cam_pos.z);
-                gl::Uniform3f(prog.u_camera_dir, dir.x, dir.y, dir.z);
-                gl::Uniform3f(prog.u_camera_up, up.x, up.y, up.z);
+            gl::BindVertexArray(vao);
 
-                gl::BindVertexArray(vao);
-                gl::DrawArrays(gl::TRIANGLES, 0, 6);
+            for ix in 0..GRID_N {
+                for iy in 0..GRID_N {
+                    for iz in 0..GRID_N {
+                        let idx = ix * GRID_N * GRID_N + iy * GRID_N + iz;
+                        let hash = grid.slot_hashes[idx];
+                        if hash == 0 { continue; }
+
+                        if let Some(prog) = grid.programs.get(&hash) {
+                            let block_min = Vec3::new(
+                                GRID_MIN + ix as f32 * BLOCK_SIZE,
+                                GRID_MIN + iy as f32 * BLOCK_SIZE,
+                                GRID_MIN + iz as f32 * BLOCK_SIZE,
+                            );
+                            let block_max = block_min + Vec3::new(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+                            let model = mat4_block_model(block_min, BLOCK_SIZE);
+
+                            gl::UseProgram(prog.id);
+                            gl::UniformMatrix4fv(prog.u_vp, 1, gl::FALSE, vp.as_ptr());
+                            gl::UniformMatrix4fv(prog.u_model, 1, gl::FALSE, model.as_ptr());
+                            gl::Uniform3f(prog.u_camera_pos, cam_pos.x, cam_pos.y, cam_pos.z);
+                            gl::Uniform3f(prog.u_block_min, block_min.x, block_min.y, block_min.z);
+                            gl::Uniform3f(prog.u_block_max, block_max.x, block_max.y, block_max.z);
+
+                            gl::DrawArrays(gl::TRIANGLES, 0, 36);
+                        }
+                    }
+                }
             }
         }
 
         window.swap_buffers();
     }
 
-    if let Some(prog) = &program {
-        unsafe { gl::DeleteProgram(prog.id); }
-    }
+    grid.cleanup();
     unsafe {
         gl::DeleteVertexArrays(1, &vao);
         gl::DeleteBuffers(1, &vbo);
