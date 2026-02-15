@@ -22,9 +22,9 @@ use std::rc::Rc;
 use std::str;
 
 // ---------- Grid constants ----------
-const GRID_N: usize = 10;
+const GRID_N: usize = 20;
 const GRID_MIN: f32 = -62.5;
-const BLOCK_SIZE: f32 = 25.0;
+const BLOCK_SIZE: f32 = 15.0;
 
 // ---------- Block vertex shader ----------
 const BLOCK_VERTEX_SHADER_SRC: &str = r#"
@@ -279,28 +279,33 @@ impl Grid {
 // ---------- Scene ----------
 
 fn build_initial_scene() -> DistanceFieldEnum {
-    let s1: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 10.0).into();
-    let s1 = s1.colored(Color::rgb(1.0, 0.0, 0.0));
+    let mut sdf: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 10.0).into();
+    sdf = sdf.colored(Color::rgb(1.0, 0.0, 0.0));
+       
 
-    let s2: DistanceFieldEnum = Sphere::new(Vec3::new(100.0, 0.0, 0.0), 10.0).into();
-    let s2 = s2.colored(Color::rgb(0.0, 1.0, 0.0));
-    let sdf: DistanceFieldEnum = Add::new(s1, s2).into();
+        for i in 0..8 {
+            let offset = (i - 4) as f32 * 50.0;
+            let s2: DistanceFieldEnum = Sphere::new(Vec3::new(20.0 + offset, 0.0, 0.0), 10.0).into();
+            let s2 = s2.colored(Color::rgb(0.0, 1.0, 0.0));
+            sdf  = Add::new(sdf, s2).into();
+            
+            let s3: DistanceFieldEnum = Sphere::new(Vec3::new(0.0 + offset, 0.0, 20.0), 10.0).into();
+            let s3 = s3.colored(Color::rgb(0.0, 1.0, 1.0));
+             sdf = Add::new(sdf, s3).into();
+            
+            let s4: DistanceFieldEnum = Sphere::new(Vec3::new(0.0 + offset, 20.0, 0.0), 10.0).into();
+            let s4 = s4.colored(Color::rgb(1.0, 1.0, 0.0));
+            sdf = Add::new(sdf, s4).into();
+            
+            let s5: DistanceFieldEnum = Sphere::new(Vec3::new(0.0 + offset, -20.0, 0.0), 10.0).into();
+            let s5 = s5.colored(Color::rgb(1.0, 0.0, 1.0));
+            sdf = Add::new(sdf, s5).into();
+            
+            let sub = Vec3::new(12.840058, 74.62816, 8.423447);
+            sdf = sdf.subtract(DistanceFieldEnum::sphere(sub, 2.0));
 
-    let s3: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 100.0), 10.0).into();
-    let s3 = s3.colored(Color::rgb(0.0, 1.0, 1.0));
-    let sdf: DistanceFieldEnum = Add::new(sdf, s3).into();
 
-    let s4: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 100.0, 0.0), 10.0).into();
-    let s4 = s4.colored(Color::rgb(1.0, 1.0, 0.0));
-    let sdf: DistanceFieldEnum = Add::new(sdf, s4).into();
-
-    let s5: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, -100.0, 0.0), 10.0).into();
-    let s5 = s5.colored(Color::rgb(1.0, 0.0, 1.0));
-    let sdf: DistanceFieldEnum = Add::new(sdf, s5).into();
-
-    let sub = Vec3::new(12.840058, 74.62816, 8.423447);
-    let sdf = sdf.subtract(DistanceFieldEnum::sphere(sub, 2.0));
-
+    }
     return sdf.optimize_bounds()
 }
 
