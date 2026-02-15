@@ -147,11 +147,11 @@ fn mat4_mul(a: &Mat4, b: &Mat4) -> Mat4 {
     out
 }
 
-fn mat4_block_model(block_min: Vec3, size: f32) -> Mat4 {
+fn mat4_block_model_box(block_min: Vec3, block_size: Vec3) -> Mat4 {
     [
-        size, 0.0, 0.0, 0.0,
-        0.0, size, 0.0, 0.0,
-        0.0, 0.0, size, 0.0,
+        block_size.x, 0.0, 0.0, 0.0,
+        0.0, block_size.y, 0.0, 0.0,
+        0.0, 0.0, block_size.z, 0.0,
         block_min.x, block_min.y, block_min.z, 1.0,
     ]
 }
@@ -245,6 +245,8 @@ enum OctreeNode {
     Leaf {
         center: Vec3,
         size: f32,
+        render_min: Vec3,
+        render_max: Vec3,
         optimized_sdf: Rc<DistanceFieldEnum>,
         topology_hash: u64,
         params: Vec<f32>,
@@ -329,9 +331,17 @@ impl Octree {
             let hash = optimized.topology_hash();
             to_compile.entry(hash).or_insert_with(|| optimized.clone());
             let params = sdf_compiler::collect_block_sdf_params(&optimized);
+            let half = size / 2.0;
+            let cell_min = center - Vec3::new(half, half, half);
+            let cell_max = center + Vec3::new(half, half, half);
+            let content = optimized.calculate_aabb_bounds();
+            let render_min = Vec3::new(cell_min.x.max(content.min.x), cell_min.y.max(content.min.y), cell_min.z.max(content.min.z));
+            let render_max = Vec3::new(cell_max.x.min(content.max.x), cell_max.y.min(content.max.y), cell_max.z.min(content.max.z));
             return OctreeNode::Leaf {
                 center,
                 size,
+                render_min,
+                render_max,
                 optimized_sdf: optimized,
                 topology_hash: hash,
                 params,
@@ -379,9 +389,17 @@ impl Octree {
             let hash = optimized.topology_hash();
             to_compile.entry(hash).or_insert_with(|| optimized.clone());
             let params = sdf_compiler::collect_block_sdf_params(&optimized);
+            let half = size / 2.0;
+            let cell_min = center - Vec3::new(half, half, half);
+            let cell_max = center + Vec3::new(half, half, half);
+            let content = optimized.calculate_aabb_bounds();
+            let render_min = Vec3::new(cell_min.x.max(content.min.x), cell_min.y.max(content.min.y), cell_min.z.max(content.min.z));
+            let render_max = Vec3::new(cell_max.x.min(content.max.x), cell_max.y.min(content.max.y), cell_max.z.min(content.max.z));
             return OctreeNode::Leaf {
                 center,
                 size,
+                render_min,
+                render_max,
                 optimized_sdf: optimized,
                 topology_hash: hash,
                 params,
@@ -404,9 +422,17 @@ impl Octree {
                 let hash = optimized.topology_hash();
                 to_compile.entry(hash).or_insert_with(|| optimized.clone());
                 let params = sdf_compiler::collect_block_sdf_params(&optimized);
+                let half = size / 2.0;
+                let cell_min = center - Vec3::new(half, half, half);
+                let cell_max = center + Vec3::new(half, half, half);
+                let content = optimized.calculate_aabb_bounds();
+                let render_min = Vec3::new(cell_min.x.max(content.min.x), cell_min.y.max(content.min.y), cell_min.z.max(content.min.z));
+                let render_max = Vec3::new(cell_max.x.min(content.max.x), cell_max.y.min(content.max.y), cell_max.z.min(content.max.z));
                 return OctreeNode::Leaf {
                     center,
                     size,
+                    render_min,
+                    render_max,
                     optimized_sdf: optimized,
                     topology_hash: hash,
                     params,
@@ -515,8 +541,10 @@ fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
 
-    for i in (-200..200).step_by(10) {
-        for j in (-200..200).step_by(10) {
+    let field_size = 200;
+    
+    for i in (-field_size..field_size).step_by(10) {
+        for j in (-field_size..field_size).step_by(10) {
             let x = i as f32 + rng.gen_range(-2.0..2.0);
             let z = j as f32 + rng.gen_range(-2.0..2.0);
             let y = -20.0 + rng.gen_range(-2.0..2.0) + j as f32 * 0.2;
@@ -529,6 +557,18 @@ fn build_initial_scene() -> DistanceFieldEnum {
             sdf = Add::new(sdf, DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color)).into();
         }
     }
+
+    for i in 0..10 {
+        let x = rng.gen_range(-field_size as f32..field_size as f32);
+        let z = rng.gen_range(-field_size as f32..field_size as f32);
+        let y = 100.0;
+        let hit_loc = sdf.cast_ray(Vec3::new(x,y,z), Vec3::new(0.0,-1.0,0.0), 1000.0);
+        if let Some(hit) = hit_loc {
+
+        }
+            
+    }
+    
     sdf.optimize_bounds()
 }
 
@@ -774,20 +814,18 @@ fn main() {
             while let Some(node) = leaf_stack.pop() {
                 match node {
                     OctreeNode::Empty => {}
-                    OctreeNode::Leaf { center, size, topology_hash, params, .. } => {
+                    OctreeNode::Leaf { center, size, render_min, render_max, topology_hash, params, .. } => {
                         if frustum.cull_aabb(*center, *size / 2.0) { continue; }
                         if let Some(prog) = octree.programs.get(topology_hash) {
-                            let half = *size / 2.0;
-                            let block_min = *center - Vec3::new(half, half, half);
-                            let block_max = *center + Vec3::new(half, half, half);
-                            let model = mat4_block_model(block_min, *size);
+                            let block_size = *render_max - *render_min;
+                            let model = mat4_block_model_box(*render_min, block_size);
 
                             gl::UseProgram(prog.id);
                             gl::UniformMatrix4fv(prog.u_vp, 1, gl::FALSE, vp.as_ptr());
                             gl::UniformMatrix4fv(prog.u_model, 1, gl::FALSE, model.as_ptr());
                             gl::Uniform3f(prog.u_camera_pos, cam_pos.x, cam_pos.y, cam_pos.z);
-                            gl::Uniform3f(prog.u_block_min, block_min.x, block_min.y, block_min.z);
-                            gl::Uniform3f(prog.u_block_max, block_max.x, block_max.y, block_max.z);
+                            gl::Uniform3f(prog.u_block_min, render_min.x, render_min.y, render_min.z);
+                            gl::Uniform3f(prog.u_block_max, render_max.x, render_max.y, render_max.z);
 
                             if !params.is_empty() {
                                 gl::Uniform1fv(prog.u_params, params.len() as i32, params.as_ptr());
@@ -825,10 +863,9 @@ fn main() {
                 while let Some(node) = debug_stack.pop() {
                     match node {
                         OctreeNode::Empty => {}
-                        OctreeNode::Leaf { center, size, .. } => {
-                            let half = *size / 2.0;
-                            let block_min = *center - Vec3::new(half, half, half);
-                            let model = mat4_block_model(block_min, *size);
+                        OctreeNode::Leaf { render_min, render_max, .. } => {
+                            let block_size = *render_max - *render_min;
+                            let model = mat4_block_model_box(*render_min, block_size);
                             gl::UniformMatrix4fv(debug_prog.2, 1, gl::FALSE, model.as_ptr());
 
                             // Color by hash of leaf index for variety
