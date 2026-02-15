@@ -437,6 +437,45 @@ impl Into<DistanceFieldEnum> for Subtract {
 
 impl DistanceFieldEnum {
 
+    pub fn topology_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash_topology(&mut hasher);
+        hasher.finish()
+    }
+
+    fn hash_topology<H: Hasher>(&self, state: &mut H) {
+        match self {
+            DistanceFieldEnum::Empty => 0u8.hash(state),
+            DistanceFieldEnum::Primitive(p) => {
+                1u8.hash(state);
+                core::mem::discriminant(p).hash(state);
+            }
+            DistanceFieldEnum::Coloring(c, inner) => {
+                2u8.hash(state);
+                core::mem::discriminant(c).hash(state);
+                inner.hash_topology(state);
+            }
+            DistanceFieldEnum::Add(add) => {
+                3u8.hash(state);
+                // Order-invariant: hash children in sorted order by their topology hash
+                let mut left_h = DefaultHasher::new();
+                add.left.hash_topology(&mut left_h);
+                let lh = left_h.finish();
+                let mut right_h = DefaultHasher::new();
+                add.right.hash_topology(&mut right_h);
+                let rh = right_h.finish();
+                let (lo, hi) = if lh <= rh { (lh, rh) } else { (rh, lh) };
+                lo.hash(state);
+                hi.hash(state);
+            }
+            DistanceFieldEnum::Subtract(sub) => {
+                4u8.hash(state);
+                sub.left.hash_topology(state);
+                sub.subtract.hash_topology(state);
+            }
+        }
+    }
+
     pub fn colored(&self, color: Color) -> DistanceFieldEnum {
         DistanceFieldEnum::Coloring(Coloring::SolidColor(color), Rc::new(self.clone()))
     }
@@ -450,7 +489,7 @@ impl DistanceFieldEnum {
     }
 
     pub fn subtract(&self, sdf : DistanceFieldEnum) -> DistanceFieldEnum {
-        DistanceFieldEnum::Subtract(Subtract::new(self.clone(), sdf, 0.5))
+        DistanceFieldEnum::Subtract(Subtract::new(self.clone(), sdf, 0.1))
     }
 
     pub fn cast_ray(&self, pos: Vec3, dir: Vec3, max_dist: f32) -> Option<(f32, Vec3)> {

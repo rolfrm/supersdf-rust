@@ -22,9 +22,9 @@ use std::rc::Rc;
 use std::str;
 
 // ---------- Grid constants ----------
-const GRID_N: usize = 20;
-const GRID_MIN: f32 = -62.5;
-const BLOCK_SIZE: f32 = 15.0;
+const GRID_N: usize = 80;
+const GRID_MIN: f32 = -200.0;
+const BLOCK_SIZE: f32 = 5.0;
 
 // ---------- Block vertex shader ----------
 const BLOCK_VERTEX_SHADER_SRC: &str = r#"
@@ -155,14 +155,15 @@ struct BlockProgram {
     u_camera_pos: GLint,
     u_block_min: GLint,
     u_block_max: GLint,
+    u_params: GLint,
 }
 
-fn build_block_program(sdf: &DistanceFieldEnum) -> Option<BlockProgram> {
-    let frag_src = sdf_compiler::compile_block_sdf_shader(sdf);
+fn build_block_program(frag_src: &str) -> Option<BlockProgram> {
+    println!("compile: {}", frag_src);
     let vs = compile_gl_shader(BLOCK_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
     if vs == 0 { return None; }
 
-    let fs = compile_gl_shader(&frag_src, gl::FRAGMENT_SHADER);
+    let fs = compile_gl_shader(frag_src, gl::FRAGMENT_SHADER);
     if fs == 0 {
         unsafe { gl::DeleteShader(vs); }
         return None;
@@ -179,6 +180,7 @@ fn build_block_program(sdf: &DistanceFieldEnum) -> Option<BlockProgram> {
             u_camera_pos: gl::GetUniformLocation(id, CString::new("u_camera_pos").unwrap().as_ptr()),
             u_block_min: gl::GetUniformLocation(id, CString::new("u_block_min").unwrap().as_ptr()),
             u_block_max: gl::GetUniformLocation(id, CString::new("u_block_max").unwrap().as_ptr()),
+            u_params: gl::GetUniformLocation(id, CString::new("u_params").unwrap().as_ptr()),
         })
     }
 }
@@ -187,24 +189,29 @@ fn build_block_program(sdf: &DistanceFieldEnum) -> Option<BlockProgram> {
 
 struct Grid {
     slot_hashes: Vec<u64>,
+    slot_params: Vec<Vec<f32>>,
     programs: HashMap<u64, BlockProgram>,
 }
 
 impl Grid {
     fn new() -> Grid {
+        let n = GRID_N * GRID_N * GRID_N;
         Grid {
-            slot_hashes: vec![0u64; GRID_N * GRID_N * GRID_N],
+            slot_hashes: vec![0u64; n],
+            slot_params: vec![Vec::new(); n],
             programs: HashMap::new(),
         }
     }
 
     fn rebuild(&mut self, sdf: &DistanceFieldEnum) {
         let mut cache = HashSet::new();
-        let mut new_hashes = vec![0u64; GRID_N * GRID_N * GRID_N];
+        let n = GRID_N * GRID_N * GRID_N;
+        let mut new_hashes = vec![0u64; n];
+        let mut new_params = vec![Vec::new(); n];
         let mut to_compile: HashMap<u64, Rc<DistanceFieldEnum>> = HashMap::new();
         let mut empty_count = 0u32;
 
-        // Phase 1: optimize all blocks, collect unique hashes
+        // Phase 1: optimize all blocks, collect unique topology hashes
         for ix in 0..GRID_N {
             for iy in 0..GRID_N {
                 for iz in 0..GRID_N {
@@ -224,10 +231,9 @@ impl Grid {
                         continue;
                     }
 
-                    let mut hasher = DefaultHasher::new();
-                    optimized.hash(&mut hasher);
-                    let hash = hasher.finish();
+                    let hash = optimized.topology_hash();
                     new_hashes[idx] = hash;
+                    new_params[idx] = sdf_compiler::collect_block_sdf_params(&optimized);
                     to_compile.entry(hash).or_insert(optimized);
                 }
             }
@@ -251,7 +257,8 @@ impl Grid {
             if self.programs.contains_key(hash) {
                 reused += 1;
             } else {
-                match build_block_program(optimized) {
+                let compiled_shader = sdf_compiler::compile_block_sdf_shader(optimized);
+                match build_block_program(&compiled_shader.source) {
                     Some(prog) => {
                         self.programs.insert(*hash, prog);
                         compiled += 1;
@@ -264,6 +271,7 @@ impl Grid {
         }
 
         self.slot_hashes = new_hashes;
+        self.slot_params = new_params;
         let active = self.slot_hashes.iter().filter(|&&h| h != 0).count();
         println!("Grid rebuild: {} active blocks, {} unique ({} compiled, {} reused), {} empty",
             active, to_compile.len(), compiled, reused, empty_count);
@@ -279,9 +287,9 @@ impl Grid {
 // ---------- Scene ----------
 
 fn build_initial_scene() -> DistanceFieldEnum {
-    let mut sdf: DistanceFieldEnum = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 10.0).into();
-    sdf = sdf.colored(Color::rgb(1.0, 0.0, 0.0));
-       
+    
+    let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
+    /*   
 
         for i in 0..8 {
             let offset = (i - 4) as f32 * 50.0;
@@ -305,7 +313,13 @@ fn build_initial_scene() -> DistanceFieldEnum {
             sdf = sdf.subtract(DistanceFieldEnum::sphere(sub, 2.0));
 
 
-    }
+}
+     */
+    for i in (-60..60).step_by(20) {
+        for j in (-60..60).step_by(20) {
+            for h in (-60..60).step_by(20) {
+    sdf = Add::new(sdf, DistanceFieldEnum::sphere(Vec3::new(i as f32, j as f32, h as f32), 5.0).colored(Color::rgb(0.0, 1.0, 0.0))).into();
+    }}}
     return sdf.optimize_bounds()
 }
 
@@ -538,6 +552,11 @@ fn main() {
                             gl::Uniform3f(prog.u_camera_pos, cam_pos.x, cam_pos.y, cam_pos.z);
                             gl::Uniform3f(prog.u_block_min, block_min.x, block_min.y, block_min.z);
                             gl::Uniform3f(prog.u_block_max, block_max.x, block_max.y, block_max.z);
+
+                            let params = &grid.slot_params[idx];
+                            if !params.is_empty() {
+                                gl::Uniform1fv(prog.u_params, params.len() as i32, params.as_ptr());
+                            }
 
                             gl::DrawArrays(gl::TRIANGLES, 0, 36);
                         }

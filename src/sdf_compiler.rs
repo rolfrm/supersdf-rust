@@ -1,4 +1,5 @@
 use crate::sdf::{Coloring, DistanceFieldEnum, Primitive};
+use std::rc::Rc;
 
 /// Compiles a `DistanceFieldEnum` tree into a GLSL fragment shader that
 /// ray-marches the SDF and shades the surface based on the color information
@@ -15,6 +16,13 @@ pub fn compile_sdf_shader(sdf: &DistanceFieldEnum) -> String {
     let color_body = ctx.compile_color(sdf);
 
     let helpers = &ctx.helpers;
+    let param_count = ctx.param_count;
+
+    let params_decl = if param_count > 0 {
+        format!("uniform float u_params[{}];\n", param_count)
+    } else {
+        String::new()
+    };
 
     format!(
         r#"#version 330 core
@@ -25,8 +33,12 @@ uniform vec2 u_resolution;
 uniform vec3 u_camera_pos;
 uniform vec3 u_camera_dir;
 uniform vec3 u_camera_up;
-
+{params_decl}
 {helpers}
+
+int g_closest_type;
+int g_closest_idx;
+float g_second_d;
 
 float sdf_distance(vec3 p) {{
 {dist_body}
@@ -57,7 +69,7 @@ void main() {{
     float t = 0.0;
     float max_dist = 500.0;
     bool hit = false;
-
+    float iterations = 0.0;
     for (int i = 0; i < 256; i++) {{
         vec3 p = ro + rd * t;
         float d = sdf_distance(p);
@@ -66,6 +78,7 @@ void main() {{
             break;
         }}
         t += d;
+        iterations += 1.0;
         if (t > max_dist) break;
     }}
 
@@ -80,12 +93,15 @@ void main() {{
         float ambient = 0.15;
         vec3 color = base_color * (ambient + diff * 0.85);
 
-        FragColor = vec4(color, 1.0);
+        //FragColor = vec4(color, 1.0);
     }} else {{
         // Sky gradient
         float sky = 0.5 + 0.5 * rd.y;
-        FragColor = vec4(mix(vec3(0.1, 0.1, 0.15), vec3(0.4, 0.6, 0.9), sky), 1.0);
+        //FragColor = vec4(mix(vec3(0.1, 0.1, 0.15), vec3(0.4, 0.6, 0.9), sky), 1.0);
     }}
+    iterations /= 10.0;
+    FragColor=vec4(iterations, iterations, iterations, 1.0);
+
 }}
 "#
     )
@@ -94,8 +110,13 @@ void main() {{
 struct CompilerCtx {
     helpers: String,
     next_id: u32,
+    param_count: usize,
     has_smooth_subtract: bool,
     has_noise: bool,
+    has_sphere_dist: bool,
+    has_aabb_dist: bool,
+    has_param3: bool,
+    has_sphere_ray_intersect: bool,
 }
 
 impl CompilerCtx {
@@ -103,8 +124,13 @@ impl CompilerCtx {
         CompilerCtx {
             helpers: String::new(),
             next_id: 0,
+            param_count: 0,
             has_smooth_subtract: false,
             has_noise: false,
+            has_sphere_dist: false,
+            has_aabb_dist: false,
+            has_param3: false,
+            has_sphere_ray_intersect: false,
         }
     }
 
@@ -112,6 +138,70 @@ impl CompilerCtx {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    fn param(&mut self) -> String {
+        let idx = self.param_count;
+        self.param_count += 1;
+        format!("u_params[{}]", idx)
+    }
+
+    /// Consume n params at once, return the starting index.
+    fn params(&mut self, n: usize) -> usize {
+        let idx = self.param_count;
+        self.param_count += n;
+        idx
+    }
+
+    /// Return (left, right) children of an Add in normalized order by topology hash,
+    /// so that Add(A, B) and Add(B, A) produce identical shader code.
+    fn ordered_add_children(add: &crate::sdf::Add) -> (&Rc<DistanceFieldEnum>, &Rc<DistanceFieldEnum>) {
+        if add.left.topology_hash() <= add.right.topology_hash() {
+            (&add.left, &add.right)
+        } else {
+            (&add.right, &add.left)
+        }
+    }
+
+    fn ensure_sphere_dist(&mut self) {
+        if !self.has_sphere_dist {
+            self.has_sphere_dist = true;
+            self.helpers.push_str(
+                r#"
+float sphere_dist(vec3 p, int i) {
+    return length(p - vec3(u_params[i], u_params[i+1], u_params[i+2])) - u_params[i+3];
+}
+
+"#,
+            );
+        }
+    }
+
+    fn ensure_aabb_dist(&mut self) {
+        if !self.has_aabb_dist {
+            self.has_aabb_dist = true;
+            self.helpers.push_str(
+                r#"
+float aabb_dist(vec3 p, int i) {
+    vec3 d = abs(p - vec3(u_params[i], u_params[i+1], u_params[i+2])) - vec3(u_params[i+3], u_params[i+4], u_params[i+5]);
+    return length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);
+}
+"#,
+            );
+        }
+    }
+
+    fn ensure_param3(&mut self) {
+        if !self.has_param3 {
+            self.has_param3 = true;
+            self.helpers.push_str(
+                r#"
+vec3 param3(int i) {
+    return vec3(u_params[i], u_params[i+1], u_params[i+2]);
+}
+"#,
+            );
+        }
     }
 
     fn ensure_smooth_subtract(&mut self) {
@@ -171,6 +261,30 @@ float fbm_noise(vec3 p, float seed) {
         }
     }
 
+    fn ensure_sphere_ray_intersect(&mut self) {
+        if !self.has_sphere_ray_intersect {
+            self.has_sphere_ray_intersect = true;
+            self.helpers.push_str(
+                r#"
+float sphere_ray_intersect(vec3 ro, vec3 rd, int i) {
+    vec3 oc = ro - vec3(u_params[i], u_params[i+1], u_params[i+2]);
+    float r = u_params[i+3];
+    float b = dot(oc, rd);
+    float c = dot(oc, oc) - r * r;
+    float disc = b * b - c;
+    if (disc < 0.0) return -1.0;
+    float sq = sqrt(disc);
+    float t0 = -b - sq;
+    if (t0 > 0.001) return t0;
+    float t1 = -b + sq;
+    if (t1 > 0.001) return t1;
+    return -1.0;
+}
+"#,
+            );
+        }
+    }
+
     /// Compile the distance function body.
     fn compile_distance(&mut self, sdf: &DistanceFieldEnum) -> String {
         let mut lines = String::new();
@@ -183,26 +297,32 @@ float fbm_noise(vec3 p, float seed) {
     /// declarations to `lines` and returns the final expression string.
     fn emit_distance(&mut self, sdf: &DistanceFieldEnum, lines: &mut String) -> String {
         match sdf {
-            DistanceFieldEnum::Empty => "1.0e10".to_string(),
+            DistanceFieldEnum::Empty => {
+                lines.push_str("    g_closest_type = -1;\n");
+                lines.push_str("    g_second_d = 1.0e10;\n");
+                "1.0e10".to_string()
+            }
 
             DistanceFieldEnum::Primitive(prim) => match prim {
-                Primitive::Sphere(s) => {
-                    format!(
-                        "(length(p - vec3({}, {}, {})) - {})",
-                        ff(s.center.x), ff(s.center.y), ff(s.center.z),
-                        ff(s.radius)
-                    )
-                }
-                Primitive::Aabb(a) => {
+                Primitive::Sphere(_) => {
+                    self.ensure_sphere_dist();
+                    let idx = self.params(4);
                     let id = self.fresh_id();
-                    lines.push_str(&format!(
-                        "    vec3 _bp{id} = abs(p - vec3({}, {}, {})) - vec3({}, {}, {});\n",
-                        ff(a.center.x), ff(a.center.y), ff(a.center.z),
-                        ff(a.radius.x), ff(a.radius.y), ff(a.radius.z),
-                    ));
-                    format!(
-                        "(length(max(_bp{id}, 0.0)) + min(max(_bp{id}.x, max(_bp{id}.y, _bp{id}.z)), 0.0))"
-                    )
+                    lines.push_str(&format!("    float _pd{id} = sphere_dist(p, {idx});\n"));
+                    lines.push_str(&format!("    g_closest_type = 0;\n"));
+                    lines.push_str(&format!("    g_closest_idx = {idx};\n"));
+                    lines.push_str("    g_second_d = 1.0e10;\n");
+                    format!("_pd{id}")
+                }
+                Primitive::Aabb(_) => {
+                    self.ensure_aabb_dist();
+                    let idx = self.params(6);
+                    let id = self.fresh_id();
+                    lines.push_str(&format!("    float _pd{id} = aabb_dist(p, {idx});\n"));
+                    lines.push_str(&format!("    g_closest_type = 1;\n"));
+                    lines.push_str(&format!("    g_closest_idx = {idx};\n"));
+                    lines.push_str("    g_second_d = 1.0e10;\n");
+                    format!("_pd{id}")
                 }
             },
 
@@ -211,40 +331,93 @@ float fbm_noise(vec3 p, float seed) {
             }
 
             DistanceFieldEnum::Add(add) => {
+                self.ensure_sphere_dist();
                 let id = self.fresh_id();
-                let b = &add.bounds;
-                // Bounding sphere early-out: if point is far from bounds,
-                // skip evaluating both children and return bounds distance.
+                let (child_a, child_b) = Self::ordered_add_children(add);
+                // Bounding sphere early-out
+                let bidx = self.params(4);
                 lines.push_str(&format!(
-                    "    float _bd{id} = length(p - vec3({}, {}, {})) - {};\n",
-                    ff(b.center.x), ff(b.center.y), ff(b.center.z), ff(b.radius)
+                    "    float _bd{id} = sphere_dist(p, {bidx});\n"
                 ));
                 lines.push_str(&format!("    float _da{id};\n"));
-                lines.push_str(&format!("    if (_bd{id} > {}) {{\n", ff(b.radius)));
+                lines.push_str(&format!("    if (_bd{id} > u_params[{r}]) {{\n", r = bidx + 3));
                 lines.push_str(&format!("        _da{id} = _bd{id};\n"));
+                lines.push_str("        g_closest_type = -1;\n");
+                lines.push_str("        g_second_d = 1.0e10;\n");
                 lines.push_str("    } else {\n");
 
-                let mut inner = String::new();
-                let left = self.emit_distance(&add.left, &mut inner);
-                let right = self.emit_distance(&add.right, &mut inner);
-                for line in inner.lines() {
+                // Left child
+                let mut left_lines = String::new();
+                let left_expr = self.emit_distance(child_a, &mut left_lines);
+
+                // Right child
+                let mut right_lines = String::new();
+                let right_expr = self.emit_distance(child_b, &mut right_lines);
+
+                let sid = self.fresh_id();
+
+                // Emit left lines (indented)
+                for line in left_lines.lines() {
                     lines.push_str("    ");
                     lines.push_str(line);
                     lines.push('\n');
                 }
-                lines.push_str(&format!("        _da{id} = min({left}, {right});\n"));
+                // Save left globals
+                lines.push_str(&format!("        int _lt{sid} = g_closest_type;\n"));
+                lines.push_str(&format!("        int _li{sid} = g_closest_idx;\n"));
+                lines.push_str(&format!("        float _ls{sid} = g_second_d;\n"));
+                lines.push_str(&format!("        float _ld{sid} = {left_expr};\n"));
+
+                // Emit right lines (indented)
+                for line in right_lines.lines() {
+                    lines.push_str("    ");
+                    lines.push_str(line);
+                    lines.push('\n');
+                }
+                lines.push_str(&format!("        float _rd{sid} = {right_expr};\n"));
+
+                // Pick winner
+                lines.push_str(&format!("        if (_ld{sid} < _rd{sid}) {{\n"));
+                lines.push_str(&format!("            g_closest_type = _lt{sid};\n"));
+                lines.push_str(&format!("            g_closest_idx = _li{sid};\n"));
+                lines.push_str(&format!("            g_second_d = min(_rd{sid}, _ls{sid});\n"));
+                lines.push_str(&format!("        }} else {{\n"));
+                lines.push_str(&format!("            g_second_d = min(_ld{sid}, g_second_d);\n"));
+                lines.push_str(&format!("        }}\n"));
+                lines.push_str(&format!("        _da{id} = min(_ld{sid}, _rd{sid});\n"));
+
                 lines.push_str("    }\n");
                 format!("_da{id}")
             }
 
             DistanceFieldEnum::Subtract(sub) => {
                 self.ensure_smooth_subtract();
-                let left = self.emit_distance(&sub.left, lines);
-                let right = self.emit_distance(&sub.subtract, lines);
+
+                // Left child (sets globals)
+                let mut left_lines = String::new();
+                let left_expr = self.emit_distance(&sub.left, &mut left_lines);
+                lines.push_str(&left_lines);
+
+                // Save left globals
+                let sid = self.fresh_id();
+                lines.push_str(&format!("    int _lt{sid} = g_closest_type;\n"));
+                lines.push_str(&format!("    int _li{sid} = g_closest_idx;\n"));
+                lines.push_str(&format!("    float _ls{sid} = g_second_d;\n"));
+
+                // Right child (overwrites globals)
+                let mut right_lines = String::new();
+                let right_expr = self.emit_distance(&sub.subtract, &mut right_lines);
+                lines.push_str(&right_lines);
+
+                // Restore left globals
+                lines.push_str(&format!("    g_closest_type = _lt{sid};\n"));
+                lines.push_str(&format!("    g_closest_idx = _li{sid};\n"));
+                lines.push_str(&format!("    g_second_d = _ls{sid};\n"));
+
+                let k = self.param();
                 let id = self.fresh_id();
                 lines.push_str(&format!(
-                    "    float _ds{id} = smooth_subtract({left}, {right}, {});\n",
-                    ff(sub.k)
+                    "    float _ds{id} = smooth_subtract({left_expr}, {right_expr}, {k});\n"
                 ));
                 format!("_ds{id}")
             }
@@ -267,51 +440,53 @@ float fbm_noise(vec3 p, float seed) {
             DistanceFieldEnum::Primitive(_) => "vec3(1.0, 0.0, 0.0)".to_string(),
 
             DistanceFieldEnum::Coloring(coloring, _inner) => match coloring {
-                Coloring::SolidColor(c) => {
-                    format!("vec3({}, {}, {})", ff(c.r), ff(c.g), ff(c.b))
+                Coloring::SolidColor(_) => {
+                    self.ensure_param3();
+                    let idx = self.params(3);
+                    format!("param3({})", idx)
                 }
-                Coloring::Gradient(g) => {
+                Coloring::Gradient(_) => {
+                    self.ensure_param3();
                     let id = self.fresh_id();
+                    let idx = self.params(12);
                     lines.push_str(&format!(
-                        "    vec3 _gp1_{id} = vec3({}, {}, {});\n",
-                        ff(g.p1.x), ff(g.p1.y), ff(g.p1.z)
+                        "    vec3 _gp1_{id} = param3({});\n", idx
                     ));
                     lines.push_str(&format!(
-                        "    vec3 _gp2_{id} = vec3({}, {}, {});\n",
-                        ff(g.p2.x), ff(g.p2.y), ff(g.p2.z)
+                        "    vec3 _gp2_{id} = param3({});\n", idx + 3
                     ));
                     format!(
-                        "mix(vec3({}, {}, {}), vec3({}, {}, {}), clamp(dot(_gp2_{id} - _gp1_{id}, p - _gp1_{id}) / dot(_gp1_{id} - _gp2_{id}, _gp1_{id} - _gp2_{id}), 0.0, 1.0))",
-                        ff(g.c1.r), ff(g.c1.g), ff(g.c1.b),
-                        ff(g.c2.r), ff(g.c2.g), ff(g.c2.b),
+                        "mix(param3({}), param3({}), clamp(dot(_gp2_{id} - _gp1_{id}, p - _gp1_{id}) / dot(_gp1_{id} - _gp2_{id}, _gp1_{id} - _gp2_{id}), 0.0, 1.0))",
+                        idx + 6, idx + 9,
                     )
                 }
-                Coloring::Noise(n) => {
+                Coloring::Noise(_) => {
                     self.ensure_noise();
+                    self.ensure_param3();
                     let id = self.fresh_id();
+                    let idx = self.params(7);
                     lines.push_str(&format!(
-                        "    float _nv{id} = fbm_noise(p, {});\n",
-                        ff(n.seed as f32)
+                        "    float _nv{id} = fbm_noise(p, u_params[{}]);\n", idx
                     ));
                     format!(
-                        "mix(vec3({}, {}, {}), vec3({}, {}, {}), _nv{id})",
-                        ff(n.c1.r), ff(n.c1.g), ff(n.c1.b),
-                        ff(n.c2.r), ff(n.c2.g), ff(n.c2.b),
+                        "mix(param3({}), param3({}), _nv{id})",
+                        idx + 1, idx + 4,
                     )
                 }
             },
 
             DistanceFieldEnum::Add(add) => {
+                let (child_a, child_b) = Self::ordered_add_children(add);
                 // Need distance of each branch to pick the closer one's color
                 let ld = {
                     let mut dl = String::new();
-                    let expr = self.emit_distance(&add.left, &mut dl);
+                    let expr = self.emit_distance(child_a, &mut dl);
                     lines.push_str(&dl);
                     expr
                 };
                 let rd = {
                     let mut dr = String::new();
-                    let expr = self.emit_distance(&add.right, &mut dr);
+                    let expr = self.emit_distance(child_b, &mut dr);
                     lines.push_str(&dr);
                     expr
                 };
@@ -321,13 +496,13 @@ float fbm_noise(vec3 p, float seed) {
 
                 let lc = {
                     let mut cl = String::new();
-                    let expr = self.emit_color(&add.left, &mut cl);
+                    let expr = self.emit_color(child_a, &mut cl);
                     lines.push_str(&cl);
                     expr
                 };
                 let rc = {
                     let mut cr = String::new();
-                    let expr = self.emit_color(&add.right, &mut cr);
+                    let expr = self.emit_color(child_b, &mut cr);
                     lines.push_str(&cr);
                     expr
                 };
@@ -346,6 +521,11 @@ float fbm_noise(vec3 p, float seed) {
     }
 }
 
+pub struct CompiledBlockShader {
+    pub source: String,
+    pub param_count: usize,
+}
+
 /// Compiles a `DistanceFieldEnum` tree into a GLSL fragment shader for a single
 /// grid block. The shader receives `v_world_pos` from the vertex shader (rasterized
 /// cube face), does ray-AABB intersection, marches the simplified SDF within
@@ -356,14 +536,23 @@ float fbm_noise(vec3 p, float seed) {
 ///   - `u_block_min`: AABB minimum corner
 ///   - `u_block_max`: AABB maximum corner
 ///   - `u_vp`: combined view-projection matrix (for depth output)
-pub fn compile_block_sdf_shader(sdf: &DistanceFieldEnum) -> String {
+///   - `u_params[N]`: parameterized SDF constants
+pub fn compile_block_sdf_shader(sdf: &DistanceFieldEnum) -> CompiledBlockShader {
     let mut ctx = CompilerCtx::new();
     let dist_body = ctx.compile_distance(sdf);
     let color_body = ctx.compile_color(sdf);
+    ctx.ensure_sphere_ray_intersect();
 
     let helpers = &ctx.helpers;
+    let param_count = ctx.param_count;
 
-    format!(
+    let params_decl = if param_count > 0 {
+        format!("uniform float u_params[{}];\n", param_count)
+    } else {
+        String::new()
+    };
+
+    let source = format!(
         r#"#version 330 core
 
 in vec3 v_world_pos;
@@ -373,8 +562,12 @@ uniform vec3 u_camera_pos;
 uniform vec3 u_block_min;
 uniform vec3 u_block_max;
 uniform mat4 u_vp;
-
+{params_decl}
 {helpers}
+
+int g_closest_type;
+int g_closest_idx;
+float g_second_d;
 
 float sdf_distance(vec3 p) {{
 {dist_body}
@@ -408,15 +601,31 @@ void main() {{
     if (t_enter > t_exit || t_exit < 0.0) discard;
 
     float t = max(t_enter - 0.01, 0.0);
-
+    float iterations = 0.0;
     bool hit = false;
     for (int i = 0; i < 128; i++) {{
-        vec3 p = ro + rd * t;
+        iterations += 1.0;
+    vec3 p = ro + rd * t;
         float d = sdf_distance(p);
         if (d < 0.001) {{
             hit = true;
             break;
         }}
+
+        if (true && g_closest_type == 0) {{
+            float t_hit = sphere_ray_intersect(ro, rd, g_closest_idx);
+            if (t_hit > t + 0.001 && t_hit - t < g_second_d) {{
+                // Jump directly to sphere surface
+                t = t_hit * 1.001;
+                continue;
+            }} else if (t_hit < 0.0) {{
+                // Ray misses sphere — skip by second closest
+                t += g_second_d;
+                if (t > t_exit) break;
+                continue;
+            }}
+        }}
+    
         t += d;
         if (t > t_exit) break;
     }}
@@ -434,13 +643,126 @@ void main() {{
     vec3 color = base_color * (ambient + diff * 0.85);
 
     FragColor = vec4(color, 1.0);
-
+    //iterations /= 5.0;
+    //FragColor= vec4(iterations, iterations, iterations, 1.0);
     // Write depth from hit point
     vec4 clip = u_vp * vec4(p, 1.0);
+    
     gl_FragDepth = (clip.z / clip.w) * 0.5 + 0.5;
 }}
 "#
-    )
+    );
+
+    CompiledBlockShader { source, param_count }
+}
+
+/// Collect all parameter values from an SDF tree in the same order as the
+/// compiler emits `u_params[N]` references. This must mirror the traversal
+/// order of `emit_distance` followed by `emit_color`.
+pub fn collect_block_sdf_params(sdf: &DistanceFieldEnum) -> Vec<f32> {
+    let mut params = Vec::new();
+    collect_distance_params(sdf, &mut params);
+    collect_color_params(sdf, &mut params);
+    params
+}
+
+fn collect_distance_params(sdf: &DistanceFieldEnum, params: &mut Vec<f32>) {
+    match sdf {
+        DistanceFieldEnum::Empty => {}
+
+        DistanceFieldEnum::Primitive(prim) => match prim {
+            Primitive::Sphere(s) => {
+                params.push(s.center.x);
+                params.push(s.center.y);
+                params.push(s.center.z);
+                params.push(s.radius);
+            }
+            Primitive::Aabb(a) => {
+                params.push(a.center.x);
+                params.push(a.center.y);
+                params.push(a.center.z);
+                params.push(a.radius.x);
+                params.push(a.radius.y);
+                params.push(a.radius.z);
+            }
+        },
+
+        DistanceFieldEnum::Coloring(_, inner) => {
+            collect_distance_params(inner, params);
+        }
+
+        DistanceFieldEnum::Add(add) => {
+            let (child_a, child_b) = CompilerCtx::ordered_add_children(add);
+            // Bounding sphere params
+            params.push(add.bounds.center.x);
+            params.push(add.bounds.center.y);
+            params.push(add.bounds.center.z);
+            params.push(add.bounds.radius);
+            // Children in normalized order
+            collect_distance_params(child_a, params);
+            collect_distance_params(child_b, params);
+        }
+
+        DistanceFieldEnum::Subtract(sub) => {
+            collect_distance_params(&sub.left, params);
+            collect_distance_params(&sub.subtract, params);
+            params.push(sub.k);
+        }
+    }
+}
+
+fn collect_color_params(sdf: &DistanceFieldEnum, params: &mut Vec<f32>) {
+    match sdf {
+        DistanceFieldEnum::Empty => {}
+
+        DistanceFieldEnum::Primitive(_) => {}
+
+        DistanceFieldEnum::Coloring(coloring, _inner) => match coloring {
+            Coloring::SolidColor(c) => {
+                params.push(c.r);
+                params.push(c.g);
+                params.push(c.b);
+            }
+            Coloring::Gradient(g) => {
+                params.push(g.p1.x);
+                params.push(g.p1.y);
+                params.push(g.p1.z);
+                params.push(g.p2.x);
+                params.push(g.p2.y);
+                params.push(g.p2.z);
+                params.push(g.c1.r);
+                params.push(g.c1.g);
+                params.push(g.c1.b);
+                params.push(g.c2.r);
+                params.push(g.c2.g);
+                params.push(g.c2.b);
+            }
+            Coloring::Noise(n) => {
+                params.push(n.seed as f32);
+                params.push(n.c1.r);
+                params.push(n.c1.g);
+                params.push(n.c1.b);
+                params.push(n.c2.r);
+                params.push(n.c2.g);
+                params.push(n.c2.b);
+            }
+        },
+
+        DistanceFieldEnum::Add(add) => {
+            let (child_a, child_b) = CompilerCtx::ordered_add_children(add);
+            // Re-collect distance params for both children (mirrors emit_color's
+            // call to emit_distance on each child)
+            collect_distance_params(child_a, params);
+            collect_distance_params(child_b, params);
+            // Then collect color params for each child
+            collect_color_params(child_a, params);
+            collect_color_params(child_b, params);
+        }
+
+        DistanceFieldEnum::Subtract(sub) => {
+            collect_color_params(&sub.left, params);
+        }
+    }
 }
 
 /// Format an f32 for GLSL output (always includes a decimal point).
@@ -466,7 +788,7 @@ mod tests {
         let shader = compile_sdf_shader(&sdf);
         assert!(shader.contains("sdf_distance"));
         assert!(shader.contains("sdf_color"));
-        assert!(shader.contains("length(p"));
+        assert!(shader.contains("sphere_dist(p"));
         println!("{}", shader);
     }
 
@@ -502,5 +824,79 @@ mod tests {
         assert!(shader.contains("#version 330 core"));
         assert!(shader.contains("FragColor"));
         println!("{}", shader);
+    }
+
+    #[test]
+    fn test_block_shader_uses_params() {
+        let sdf: DistanceFieldEnum =
+            Sphere::new(Vec3::new(1.0, 2.0, 3.0), 4.0).color(Color::RED);
+        let compiled = compile_block_sdf_shader(&sdf);
+        assert!(compiled.source.contains("u_params["));
+        assert!(compiled.param_count > 0);
+        // Should not contain literal values for the sphere
+        assert!(!compiled.source.contains("1.0, 2.0, 3.0"));
+        println!("param_count = {}", compiled.param_count);
+        println!("{}", compiled.source);
+    }
+
+    #[test]
+    fn test_collect_params_matches_count() {
+        let sdf: DistanceFieldEnum =
+            Sphere::new(Vec3::new(1.0, 2.0, 3.0), 4.0).color(Color::RED);
+        let compiled = compile_block_sdf_shader(&sdf);
+        let params = collect_block_sdf_params(&sdf);
+        assert_eq!(params.len(), compiled.param_count,
+            "collected params len ({}) != compiled param_count ({})",
+            params.len(), compiled.param_count);
+        // Sphere: cx, cy, cz, r = 4 distance params
+        // SolidColor: r, g, b = 3 color params
+        // Total = 7
+        assert_eq!(params.len(), 7);
+        assert_eq!(params[0], 1.0); // cx
+        assert_eq!(params[1], 2.0); // cy
+        assert_eq!(params[2], 3.0); // cz
+        assert_eq!(params[3], 4.0); // radius
+    }
+
+    #[test]
+    fn test_collect_params_add() {
+        let s1: DistanceFieldEnum =
+            Sphere::new(Vec3::new(0.0, 0.0, 0.0), 1.0).color(Color::RED);
+        let s2: DistanceFieldEnum =
+            Sphere::new(Vec3::new(3.0, 0.0, 0.0), 1.0).color(Color::BLUE);
+        let sdf = Add::new2(s1, s2);
+        let compiled = compile_block_sdf_shader(&sdf);
+        let params = collect_block_sdf_params(&sdf);
+        assert_eq!(params.len(), compiled.param_count,
+            "collected params len ({}) != compiled param_count ({})",
+            params.len(), compiled.param_count);
+    }
+
+    #[test]
+    fn test_collect_params_subtract() {
+        let s1: DistanceFieldEnum =
+            Sphere::new(Vec3::new(0.0, 0.0, 0.0), 2.0).color(Color::RED);
+        let s2: DistanceFieldEnum = Sphere::new(Vec3::new(1.0, 0.0, 0.0), 1.0).into();
+        let sdf = s1.subtract(s2);
+        let compiled = compile_block_sdf_shader(&sdf);
+        let params = collect_block_sdf_params(&sdf);
+        assert_eq!(params.len(), compiled.param_count,
+            "collected params len ({}) != compiled param_count ({})",
+            params.len(), compiled.param_count);
+    }
+
+    #[test]
+    fn test_block_shader_has_globals() {
+        let s1: DistanceFieldEnum =
+            Sphere::new(Vec3::new(0.0, 0.0, 0.0), 1.0).color(Color::RED);
+        let s2: DistanceFieldEnum =
+            Sphere::new(Vec3::new(3.0, 0.0, 0.0), 1.0).color(Color::BLUE);
+        let sdf = Add::new2(s1, s2);
+        let compiled = compile_block_sdf_shader(&sdf);
+        assert!(compiled.source.contains("g_closest_type"));
+        assert!(compiled.source.contains("g_closest_idx"));
+        assert!(compiled.source.contains("g_second_d"));
+        assert!(compiled.source.contains("sphere_ray_intersect"));
+        println!("{}", compiled.source);
     }
 }
