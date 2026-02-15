@@ -590,30 +590,33 @@ impl DistanceFieldEnum {
         let new_min_d = (f32::min(d1, f32::min(d2, min_d)) * 10.0).floor() / 10.0;
         let left_opt = add.left.optimized_for_block2(block_center, size, cache, new_min_d);
         let right_opt = add.right.optimized_for_block2(block_center, size, cache, new_min_d);
-        
-        let left_d = d1;
-        let right_d = right_opt.distance(block_center);
-        if left_d > right_d + size * SQRT3 * SQRT_2{
-            return right_opt;
-        }
-        if right_d > left_d + size * SQRT3 * SQRT_2{
-            return left_opt;
-        }
-        if f32::min(right_d, left_d) > min_d + size * SQRT3 * 2.0  {
-            return DistanceFieldEnum::Empty{}.into();
-        }
-        if f32::min(right_d, left_d) > size * SQRT3 * 2.0 * 1.5  {
-            if right_d < left_d {
-                return right_opt;
-            }
-            return left_opt;
-        }
+
         if matches!(left_opt.as_ref(), DistanceFieldEnum::Empty) {
             return right_opt;
         }
         if matches!(right_opt.as_ref(), DistanceFieldEnum::Empty) {
             return left_opt;
         }
+        
+        let left_d = d1;
+        let right_d = right_opt.distance(block_center);
+        let half = size / 2.0;
+        if left_d > right_d + half * SQRT3 * SQRT_2{
+            return right_opt;
+        }
+        if right_d > left_d + half * SQRT3 * SQRT_2{
+            return left_opt;
+        }
+        if f32::min(right_d, left_d) > min_d + half * SQRT3 * 2.0  {
+            return DistanceFieldEnum::Empty{}.into();
+        }
+        if f32::min(right_d, left_d) > half * SQRT3 * 2.0 * 1.5  {
+            if right_d < left_d {
+                return right_opt;
+            }
+            return left_opt;
+        }
+        
         if left_opt.eq(&add.left) && right_opt.eq(&add.right) {
             let add2 = add.clone();
             return Rc::new(DistanceFieldEnum::Add(add2).into());
@@ -634,7 +637,7 @@ impl DistanceFieldEnum {
                 
                 let subtract_d = optsub.distance(block_center);
                 let left2 = sub.left.optimized_for_block2(block_center, size, cache, min_d);
-                if subtract_d > size * SQRT3 * 2.0{
+                if subtract_d > size / 2.0 * SQRT3 * 2.0{
                     if left2.eq(&sub.left) {
                         return sub.left.clone();
                     }
@@ -668,10 +671,10 @@ impl DistanceFieldEnum {
             
             _ =>{
                 let sb = self.calculate_sphere_bounds();
-                if !sb.overlaps_aabb(block_center, size){
+                if !sb.overlaps_aabb(block_center, size / 2.0){
                     return Rc::new(DistanceFieldEnum::Empty);
                 }
-                if self.distance(block_center) > min_d + size * SQRT3 * 2.0 {
+                if self.distance(block_center) > min_d + size / 2.0 * SQRT3 * 2.0 {
                     return Rc::new(DistanceFieldEnum::Empty);
                 }
                 return Rc::new(self.clone())

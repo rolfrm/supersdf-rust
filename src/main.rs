@@ -23,7 +23,7 @@ use std::str;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 // ---------- Octree constants ----------
-const MIN_NODE_SIZE: f32 = 5.0;
+const MIN_NODE_SIZE: f32 = 0.5;
 const ROOT_SIZE: f32 = 4000.0;
 
 // ---------- Block vertex shader ----------
@@ -327,7 +327,7 @@ impl Octree {
         }
 
         // Leaf condition: stop subdividing at min size or <=1 primitive
-        if (size <= MIN_NODE_SIZE && optimized.count_primitives() <= 6) || optimized.count_primitives() <= 3 {
+        if (size <= MIN_NODE_SIZE && optimized.count_primitives() <= 6) || optimized.count_primitives() <= 6 {
             let hash = optimized.topology_hash();
             to_compile.entry(hash).or_insert_with(|| optimized.clone());
             let params = sdf_compiler::collect_block_sdf_params(&optimized);
