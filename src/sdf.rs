@@ -150,25 +150,56 @@ impl Sphere {
     }
 
     pub fn two_sphere_bounds(a: &Sphere, b: &Sphere) -> Sphere {
-        let n2 = (a.center - b.center).length();
-        if n2 <= 0.000001 {
-            return match a.radius < b.radius{
+        // If either has non-finite radius, return the other (or keep infinite)
+        if !a.radius.is_finite() { return b.clone(); }
+        if !b.radius.is_finite() { return a.clone(); }
+
+        let d = (a.center - b.center).length();
+
+        // One sphere contains the other
+        if d + b.radius <= a.radius { return a.clone(); }
+        if d + a.radius <= b.radius { return b.clone(); }
+
+        if d <= 0.000001 {
+            return match a.radius < b.radius {
                 true => b,
-                false => a
+                false => a,
             }.clone();
         }
-        let r2ld = (a.center - b.center) / n2;
-        let leftext = a.center + r2ld * a.radius;
-        let rightext = b.center - r2ld * b.radius;
+
+        let dir = (b.center - a.center) / d;
+        // Extreme points of the union along the connecting axis
+        let leftext = a.center - dir * a.radius;
+        let rightext = b.center + dir * b.radius;
 
         let center = (leftext + rightext) * 0.5;
         let radius = (leftext - rightext).length() * 0.5;
 
-        return Sphere::new(center, radius);
+        Sphere::new(center, radius)
     }
 
     pub fn overlaps(&self, other: &Sphere) -> bool {
         (self.center - other.center).length() - self.radius - other.radius < 0.0
+    }
+
+    /// Test if this sphere fits entirely inside an axis-aligned box.
+    pub fn contained_in_aabb(&self, box_center: Vec3, box_half: f32) -> bool {
+        (self.center.x - self.radius >= box_center.x - box_half)
+            && (self.center.x + self.radius <= box_center.x + box_half)
+            && (self.center.y - self.radius >= box_center.y - box_half)
+            && (self.center.y + self.radius <= box_center.y + box_half)
+            && (self.center.z - self.radius >= box_center.z - box_half)
+            && (self.center.z + self.radius <= box_center.z + box_half)
+    }
+
+    /// Test if this sphere overlaps an axis-aligned box defined by center and half-size.
+    pub fn overlaps_aabb(&self, box_center: Vec3, box_half: f32) -> bool {
+        // Closest point on AABB to sphere center
+        let dx = (self.center.x - box_center.x).clamp(-box_half, box_half);
+        let dy = (self.center.y - box_center.y).clamp(-box_half, box_half);
+        let dz = (self.center.z - box_center.z).clamp(-box_half, box_half);
+        let closest = Vec3::new(box_center.x + dx, box_center.y + dy, box_center.z + dz);
+        (self.center - closest).length() <= self.radius
     }
 }
 
@@ -592,6 +623,10 @@ impl DistanceFieldEnum {
             }
             
             _ =>{
+                let sb = self.calculate_sphere_bounds();
+                if !sb.overlaps_aabb(block_center, size){
+                    return Rc::new(DistanceFieldEnum::Empty);
+                }
                 if self.distance(block_center) > min_d + size * SQRT3 * 2.0 {
                     return Rc::new(DistanceFieldEnum::Empty);
                 }
@@ -868,6 +903,16 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Empty => 1,
         }
     }
+    pub fn count_primitives(&self) -> u32 {
+        match self {
+            DistanceFieldEnum::Primitive(_) => 1,
+            DistanceFieldEnum::Coloring(_, inner) => inner.count_primitives(),
+            DistanceFieldEnum::Add(add) => add.left.count_primitives() + add.right.count_primitives(),
+            DistanceFieldEnum::Subtract(sub) => sub.left.count_primitives(),
+            DistanceFieldEnum::Empty => 0,
+        }
+    }
+
     pub fn first_add(&self) -> Option<Add> {
         match self{
             DistanceFieldEnum::Primitive(_) => None,

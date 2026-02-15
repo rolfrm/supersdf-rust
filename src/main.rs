@@ -21,10 +21,9 @@ use std::ptr;
 use std::rc::Rc;
 use std::str;
 
-// ---------- Grid constants ----------
-const GRID_N: usize = 80;
-const GRID_MIN: f32 = -200.0;
-const BLOCK_SIZE: f32 = 5.0;
+// ---------- Octree constants ----------
+const MIN_NODE_SIZE: f32 = 5.0;
+const ROOT_SIZE: f32 = 4000.0;
 
 // ---------- Block vertex shader ----------
 const BLOCK_VERTEX_SHADER_SRC: &str = r#"
@@ -37,6 +36,16 @@ void main() {
     vec4 world = u_model * vec4(aPos, 1.0);
     v_world_pos = world.xyz;
     gl_Position = u_vp * world;
+}
+"#;
+
+// ---------- Debug box shader (flat color, alpha) ----------
+const DEBUG_BOX_FRAG_SRC: &str = r#"
+#version 330 core
+uniform vec3 u_color;
+out vec4 FragColor;
+void main() {
+    FragColor = vec4(u_color, 0.12);
 }
 "#;
 
@@ -159,7 +168,7 @@ struct BlockProgram {
 }
 
 fn build_block_program(frag_src: &str) -> Option<BlockProgram> {
-    println!("compile: {}", frag_src);
+    //println!("compile: {}", frag_src);
     let vs = compile_gl_shader(BLOCK_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
     if vs == 0 { return None; }
 
@@ -185,62 +194,223 @@ fn build_block_program(frag_src: &str) -> Option<BlockProgram> {
     }
 }
 
-// ---------- Grid ----------
+// ---------- Octree ----------
 
-struct Grid {
-    slot_hashes: Vec<u64>,
-    slot_params: Vec<Vec<f32>>,
+#[derive(Clone)]
+enum OctreeNode {
+    Leaf {
+        center: Vec3,
+        size: f32,
+        optimized_sdf: Rc<DistanceFieldEnum>,
+        topology_hash: u64,
+        params: Vec<f32>,
+    },
+    Branch {
+        center: Vec3,
+        size: f32,
+        optimized_sdf: Rc<DistanceFieldEnum>,
+        children: [Option<Rc<OctreeNode>>; 8],
+    },
+    Empty,
+}
+
+struct Octree {
+    root: OctreeNode,
     programs: HashMap<u64, BlockProgram>,
 }
 
-impl Grid {
-    fn new() -> Grid {
-        let n = GRID_N * GRID_N * GRID_N;
-        Grid {
-            slot_hashes: vec![0u64; n],
-            slot_params: vec![Vec::new(); n],
+/// Return the center offset for child octant `i` given `half` = child_size / 2.
+fn octant_offset(i: usize, half: f32) -> Vec3 {
+    Vec3::new(
+        if i & 1 != 0 { half } else { -half },
+        if i & 2 != 0 { half } else { -half },
+        if i & 4 != 0 { half } else { -half },
+    )
+}
+
+
+impl Octree {
+    fn new() -> Octree {
+        Octree {
+            root: OctreeNode::Empty,
             programs: HashMap::new(),
+        }
+    }
+
+    
+
+    fn build_node(
+        center: Vec3,
+        size: f32,
+        sdf: &DistanceFieldEnum,
+        old_node: &OctreeNode,
+        cache: &mut HashSet<DistanceFieldEnum>,
+        to_compile: &mut HashMap<u64, Rc<DistanceFieldEnum>>,
+        reused_count: &mut u32,
+    ) -> OctreeNode {
+        let optimized = sdf.optimized_for_block(center, size, cache);
+
+        // Empty check
+        if matches!(optimized.as_ref(), DistanceFieldEnum::Empty) {
+            return OctreeNode::Empty;
+        }
+
+        // Bounding sphere vs AABB check — fast cull using the SDF's bounding structure
+        let bounds = optimized.calculate_sphere_bounds();
+        if bounds.radius.is_finite() && !bounds.overlaps_aabb(center, size / 2.0) {
+            return OctreeNode::Empty;
+        }
+
+        let half_diag = size * 0.5 * 1.7320508;
+        if optimized.distance(center) > half_diag {
+            return OctreeNode::Empty;
+        }
+
+        // Change detection: if the optimized SDF matches old node's, reuse subtree
+        match old_node {
+            OctreeNode::Leaf { optimized_sdf, .. }
+            | OctreeNode::Branch { optimized_sdf, .. }
+                if Rc::ptr_eq(&optimized, optimized_sdf) || *optimized == **optimized_sdf =>
+            {
+                // Collect all hashes from the reused subtree so we don't delete their programs
+                Self::collect_hashes(old_node, to_compile);
+                *reused_count += 1;
+                return old_node.clone();
+            }
+            _ => {}
+        }
+
+        // Leaf condition: stop subdividing at min size or <=1 primitive
+        if (size <= MIN_NODE_SIZE && optimized.count_primitives() <= 6) || optimized.count_primitives() <= 4 {
+            let hash = optimized.topology_hash();
+            to_compile.entry(hash).or_insert_with(|| optimized.clone());
+            let params = sdf_compiler::collect_block_sdf_params(&optimized);
+            return OctreeNode::Leaf {
+                center,
+                size,
+                optimized_sdf: optimized,
+                topology_hash: hash,
+                params,
+            };
+        }
+
+        // Subdivide into 8 children
+        let child_size = size / 2.0;
+        let children: [Option<Rc<OctreeNode>>; 8] = std::array::from_fn(|i| {
+            let child_center = center + octant_offset(i, child_size / 2.0);
+            let old_child = match old_node {
+                OctreeNode::Branch { children, .. } => children[i]
+                    .as_ref()
+                    .map(|rc| rc.as_ref())
+                    .unwrap_or(&OctreeNode::Empty),
+                _ => &OctreeNode::Empty,
+            };
+            let child = Self::build_node(
+                child_center,
+                child_size,
+                &optimized,
+                old_child,
+                cache,
+                to_compile,
+                reused_count,
+                );
+
+            match child {
+                OctreeNode::Empty => None,
+                node => Some(Rc::new(node)),
+            }
+        });
+
+        // Count non-empty children
+        let non_empty_count = children.iter().filter(|c| c.is_some()).count();
+
+        // All children empty → this branch is empty
+        if non_empty_count == 0 {
+            return OctreeNode::Empty;
+        }
+
+        // Only one child with simple SDF → collapse to a leaf
+        // (must use parent's center/size/optimized so change detection matches next rebuild)
+        if non_empty_count == 1 && optimized.count_primitives() <= 1 {
+            let hash = optimized.topology_hash();
+            to_compile.entry(hash).or_insert_with(|| optimized.clone());
+            let params = sdf_compiler::collect_block_sdf_params(&optimized);
+            return OctreeNode::Leaf {
+                center,
+                size,
+                optimized_sdf: optimized,
+                topology_hash: hash,
+                params,
+            };
+        }
+
+        // Collapse: if every non-empty child is a leaf with the same topology hash,
+        // merge back into one leaf at the parent size.
+        let first_hash = children.iter().flatten().find_map(|c| match c.as_ref() {
+            OctreeNode::Leaf { topology_hash, .. } => Some(*topology_hash),
+            _ => None,
+        });
+        if let Some(fh) = first_hash {
+            let can_collapse = optimized.count_primitives() < 2
+                && children.iter().all(|c| match c {
+                    Some(rc) => matches!(rc.as_ref(), OctreeNode::Leaf { topology_hash, .. } if *topology_hash == fh),
+                    None => true,
+                });
+            if can_collapse {
+                let hash = optimized.topology_hash();
+                to_compile.entry(hash).or_insert_with(|| optimized.clone());
+                let params = sdf_compiler::collect_block_sdf_params(&optimized);
+                return OctreeNode::Leaf {
+                    center,
+                    size,
+                    optimized_sdf: optimized,
+                    topology_hash: hash,
+                    params,
+                };
+            }
+        }
+
+        OctreeNode::Branch {
+            center,
+            size,
+            optimized_sdf: optimized,
+            children,
+        }
+    }
+
+    /// Collect topology hashes from a subtree (for reused nodes whose programs we must keep).
+    fn collect_hashes(node: &OctreeNode, to_compile: &mut HashMap<u64, Rc<DistanceFieldEnum>>) {
+        match node {
+            OctreeNode::Leaf { topology_hash, optimized_sdf, .. } => {
+                to_compile.entry(*topology_hash).or_insert_with(|| optimized_sdf.clone());
+            }
+            OctreeNode::Branch { children, .. } => {
+                for child in children.iter().flatten() {
+                    Self::collect_hashes(child, to_compile);
+                }
+            }
+            OctreeNode::Empty => {}
         }
     }
 
     fn rebuild(&mut self, sdf: &DistanceFieldEnum) {
         let mut cache = HashSet::new();
-        let n = GRID_N * GRID_N * GRID_N;
-        let mut new_hashes = vec![0u64; n];
-        let mut new_params = vec![Vec::new(); n];
         let mut to_compile: HashMap<u64, Rc<DistanceFieldEnum>> = HashMap::new();
-        let mut empty_count = 0u32;
+        let mut reused_count = 0u32;
 
-        // Phase 1: optimize all blocks, collect unique topology hashes
-        for ix in 0..GRID_N {
-            for iy in 0..GRID_N {
-                for iz in 0..GRID_N {
-                    let idx = ix * GRID_N * GRID_N + iy * GRID_N + iz;
-                    let center = Vec3::new(
-                        GRID_MIN + (ix as f32 + 0.5) * BLOCK_SIZE,
-                        GRID_MIN + (iy as f32 + 0.5) * BLOCK_SIZE,
-                        GRID_MIN + (iz as f32 + 0.5) * BLOCK_SIZE,
-                    );
-                    let optimized = sdf.optimized_for_block(center, BLOCK_SIZE, &mut cache);
-                    let half_diag = BLOCK_SIZE * 0.5 * 1.7320508;
-                    let block_empty = matches!(optimized.as_ref(), DistanceFieldEnum::Empty)
-                        || optimized.distance(center) > half_diag;
+        let root_center = Vec3::new(0.0, 0.0, 0.0);
+        let new_root = Self::build_node(
+            root_center,
+            ROOT_SIZE,
+            sdf,
+            &self.root,
+            &mut cache,
+            &mut to_compile,
+            &mut reused_count,
+        );
 
-                    if block_empty {
-                        empty_count += 1;
-                        continue;
-                    }
-
-                    let hash = optimized.topology_hash();
-                    new_hashes[idx] = hash;
-                    new_params[idx] = sdf_compiler::collect_block_sdf_params(&optimized);
-                    to_compile.entry(hash).or_insert(optimized);
-                }
-            }
-        }
-
-        // Phase 2: delete programs no longer needed
-        let needed: HashSet<u64> = new_hashes.iter().copied().filter(|&h| h != 0).collect();
+        // Delete programs no longer needed
+        let needed: HashSet<u64> = to_compile.keys().copied().collect();
         self.programs.retain(|hash, prog| {
             if needed.contains(hash) {
                 true
@@ -250,12 +420,12 @@ impl Grid {
             }
         });
 
-        // Phase 3: compile only new unique programs
+        // Compile only new unique programs
         let mut compiled = 0u32;
-        let mut reused = 0u32;
+        let mut already_cached = 0u32;
         for (hash, optimized) in &to_compile {
             if self.programs.contains_key(hash) {
-                reused += 1;
+                already_cached += 1;
             } else {
                 let compiled_shader = sdf_compiler::compile_block_sdf_shader(optimized);
                 match build_block_program(&compiled_shader.source) {
@@ -270,11 +440,22 @@ impl Grid {
             }
         }
 
-        self.slot_hashes = new_hashes;
-        self.slot_params = new_params;
-        let active = self.slot_hashes.iter().filter(|&&h| h != 0).count();
-        println!("Grid rebuild: {} active blocks, {} unique ({} compiled, {} reused), {} empty",
-            active, to_compile.len(), compiled, reused, empty_count);
+        self.root = new_root;
+        let leaf_count = Self::count_leaves(&self.root);
+        println!(
+            "Octree rebuild: {} leaves, {} unique ({} compiled, {} cached), {} subtrees reused",
+            leaf_count, to_compile.len(), compiled, already_cached, reused_count
+        );
+    }
+
+    fn count_leaves(node: &OctreeNode) -> u32 {
+        match node {
+            OctreeNode::Empty => 0,
+            OctreeNode::Leaf { .. } => 1,
+            OctreeNode::Branch { children, .. } => {
+                children.iter().flatten().map(|c| Self::count_leaves(c)).sum()
+            }
+        }
     }
 
     fn cleanup(&mut self) {
@@ -315,9 +496,9 @@ fn build_initial_scene() -> DistanceFieldEnum {
 
 }
      */
-    for i in (-60..60).step_by(20) {
-        for j in (-60..60).step_by(20) {
-            for h in (-60..60).step_by(20) {
+    for i in (-100..100).step_by(20) {
+        for j in (-100..100).step_by(20) {
+            for h in (-30..30).step_by(20) {
     sdf = Add::new(sdf, DistanceFieldEnum::sphere(Vec3::new(i as f32, j as f32, h as f32), 5.0).colored(Color::rgb(0.0, 1.0, 0.0))).into();
     }}}
     return sdf.optimize_bounds()
@@ -391,7 +572,21 @@ fn main() {
         gl::BindVertexArray(0);
     }
 
-    let mut grid = Grid::new();
+    let mut octree = Octree::new();
+
+    // Debug box shader for visualizing octree nodes
+    let debug_prog = {
+        let vs = compile_gl_shader(BLOCK_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
+        let fs = compile_gl_shader(DEBUG_BOX_FRAG_SRC, gl::FRAGMENT_SHADER);
+        let id = link_program(vs, fs);
+        (
+            id,
+            unsafe { gl::GetUniformLocation(id, CString::new("u_vp").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("u_model").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("u_color").unwrap().as_ptr()) },
+        )
+    };
+    let mut show_debug_boxes = false;
 
     // Camera state
     let mut cam_pos = Vec3::new(0.0, 0.0, -60.0);
@@ -401,6 +596,7 @@ fn main() {
     let mut first_mouse = true;
     let move_speed = 1.0f32;
     let mouse_sensitivity = 0.002f32;
+    let mut left_mouse_down = false;
 
     let mut key_w = false;
     let mut key_a = false;
@@ -438,7 +634,17 @@ fn main() {
                             sdf_dirty = true;
                             println!("Reset scene");
                         }
+                        Key::B if pressed => {
+                            show_debug_boxes = !show_debug_boxes;
+                            println!("Debug boxes: {}", if show_debug_boxes { "ON" } else { "OFF" });
+                        }
                         _ => {}
+                    }
+                }
+                glfw::WindowEvent::MouseButton(MouseButton::Button1, action, _) => {
+                    left_mouse_down = action == Action::Press;
+                    if action == Action::Press {
+                        first_mouse = true;
                     }
                 }
                 glfw::WindowEvent::MouseButton(MouseButton::Button2, Action::Press, _) => {
@@ -458,7 +664,7 @@ fn main() {
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
-                        sdf = sdf.subtract(DistanceFieldEnum::sphere(hit_pos, 5.0));
+                        sdf = sdf.add(DistanceFieldEnum::sphere(hit_pos, 5.0));
                         sdf = sdf.optimize_bounds();
                         sdf_dirty = true;
                         println!("Subtracted sphere at {}", hit_pos);
@@ -468,16 +674,20 @@ fn main() {
                     gl::Viewport(0, 0, w, h);
                 },
                 glfw::WindowEvent::CursorPos(x, y) => {
-                    if first_mouse {
+                    if left_mouse_down {
+                        if first_mouse {
+                            last_cursor = (x, y);
+                            first_mouse = false;
+                        }
+                        let dx = (x - last_cursor.0) as f32;
+                        let dy = (y - last_cursor.1) as f32;
                         last_cursor = (x, y);
-                        first_mouse = false;
+                        yaw += dx * mouse_sensitivity;
+                        pitch -= dy * mouse_sensitivity;
+                        pitch = pitch.clamp(-1.5, 1.5);
+                    } else {
+                        last_cursor = (x, y);
                     }
-                    let dx = (x - last_cursor.0) as f32;
-                    let dy = (y - last_cursor.1) as f32;
-                    last_cursor = (x, y);
-                    yaw += dx * mouse_sensitivity;
-                    pitch -= dy * mouse_sensitivity;
-                    pitch = pitch.clamp(-1.5, 1.5);
                 }
                 _ => {}
             }
@@ -486,7 +696,7 @@ fn main() {
         // Recompile shaders if SDF changed
         if sdf_dirty {
             sdf_dirty = false;
-            grid.rebuild(&sdf);
+            octree.rebuild(&sdf);
         }
 
         // Camera direction from yaw/pitch
@@ -530,21 +740,17 @@ fn main() {
 
             gl::BindVertexArray(vao);
 
-            for ix in 0..GRID_N {
-                for iy in 0..GRID_N {
-                    for iz in 0..GRID_N {
-                        let idx = ix * GRID_N * GRID_N + iy * GRID_N + iz;
-                        let hash = grid.slot_hashes[idx];
-                        if hash == 0 { continue; }
-
-                        if let Some(prog) = grid.programs.get(&hash) {
-                            let block_min = Vec3::new(
-                                GRID_MIN + ix as f32 * BLOCK_SIZE,
-                                GRID_MIN + iy as f32 * BLOCK_SIZE,
-                                GRID_MIN + iz as f32 * BLOCK_SIZE,
-                            );
-                            let block_max = block_min + Vec3::new(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
-                            let model = mat4_block_model(block_min, BLOCK_SIZE);
+            // Collect leaves from octree and render each one
+            let mut leaf_stack: Vec<&OctreeNode> = vec![&octree.root];
+            while let Some(node) = leaf_stack.pop() {
+                match node {
+                    OctreeNode::Empty => {}
+                    OctreeNode::Leaf { center, size, topology_hash, params, .. } => {
+                        if let Some(prog) = octree.programs.get(topology_hash) {
+                            let half = *size / 2.0;
+                            let block_min = *center - Vec3::new(half, half, half);
+                            let block_max = *center + Vec3::new(half, half, half);
+                            let model = mat4_block_model(block_min, *size);
 
                             gl::UseProgram(prog.id);
                             gl::UniformMatrix4fv(prog.u_vp, 1, gl::FALSE, vp.as_ptr());
@@ -553,7 +759,6 @@ fn main() {
                             gl::Uniform3f(prog.u_block_min, block_min.x, block_min.y, block_min.z);
                             gl::Uniform3f(prog.u_block_max, block_max.x, block_max.y, block_max.z);
 
-                            let params = &grid.slot_params[idx];
                             if !params.is_empty() {
                                 gl::Uniform1fv(prog.u_params, params.len() as i32, params.as_ptr());
                             }
@@ -561,15 +766,61 @@ fn main() {
                             gl::DrawArrays(gl::TRIANGLES, 0, 36);
                         }
                     }
+                    OctreeNode::Branch { children, .. } => {
+                        for child in children.iter().flatten() {
+                            leaf_stack.push(child);
+                        }
+                    }
                 }
+            }
+
+            // Debug pass: draw translucent boxes for each leaf node
+            if show_debug_boxes {
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+                gl::DepthMask(gl::FALSE);
+                gl::UseProgram(debug_prog.0);
+                gl::UniformMatrix4fv(debug_prog.1, 1, gl::FALSE, vp.as_ptr());
+
+                let mut debug_stack: Vec<&OctreeNode> = vec![&octree.root];
+                let mut leaf_idx: u32 = 0;
+                while let Some(node) = debug_stack.pop() {
+                    match node {
+                        OctreeNode::Empty => {}
+                        OctreeNode::Leaf { center, size, .. } => {
+                            let half = *size / 2.0;
+                            let block_min = *center - Vec3::new(half, half, half);
+                            let model = mat4_block_model(block_min, *size);
+                            gl::UniformMatrix4fv(debug_prog.2, 1, gl::FALSE, model.as_ptr());
+
+                            // Color by hash of leaf index for variety
+                            let r = ((leaf_idx * 97 + 31) % 255) as f32 / 255.0;
+                            let g = ((leaf_idx * 53 + 73) % 255) as f32 / 255.0;
+                            let b = ((leaf_idx * 179 + 17) % 255) as f32 / 255.0;
+                            gl::Uniform3f(debug_prog.3, r, g, b);
+
+                            gl::DrawArrays(gl::TRIANGLES, 0, 36);
+                            leaf_idx += 1;
+                        }
+                        OctreeNode::Branch { children, .. } => {
+                            for child in children.iter().flatten() {
+                                debug_stack.push(child);
+                            }
+                        }
+                    }
+                }
+
+                gl::DepthMask(gl::TRUE);
+                gl::Disable(gl::BLEND);
             }
         }
 
         window.swap_buffers();
     }
 
-    grid.cleanup();
+    octree.cleanup();
     unsafe {
+        gl::DeleteProgram(debug_prog.0);
         gl::DeleteVertexArrays(1, &vao);
         gl::DeleteBuffers(1, &vbo);
     }

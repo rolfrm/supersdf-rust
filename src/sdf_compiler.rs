@@ -612,7 +612,7 @@ void main() {{
             break;
         }}
 
-        if (true && g_closest_type == 0) {{
+        if (g_closest_type == 0) {{
             float t_hit = sphere_ray_intersect(ro, rd, g_closest_idx);
             if (t_hit > t + 0.001 && t_hit - t < g_second_d) {{
                 // Jump directly to sphere surface
