@@ -346,6 +346,103 @@ float fbm_noise(vec3 p, float seed) {
     }
 }
 
+/// Compiles a `DistanceFieldEnum` tree into a GLSL fragment shader for a single
+/// grid block. The shader receives `v_world_pos` from the vertex shader (rasterized
+/// cube face), does ray-AABB intersection, marches the simplified SDF within
+/// the AABB, writes `gl_FragDepth` on hit, and `discard`s on miss.
+///
+/// Uniforms:
+///   - `u_camera_pos`: camera world position
+///   - `u_block_min`: AABB minimum corner
+///   - `u_block_max`: AABB maximum corner
+///   - `u_vp`: combined view-projection matrix (for depth output)
+pub fn compile_block_sdf_shader(sdf: &DistanceFieldEnum) -> String {
+    let mut ctx = CompilerCtx::new();
+    let dist_body = ctx.compile_distance(sdf);
+    let color_body = ctx.compile_color(sdf);
+
+    let helpers = &ctx.helpers;
+
+    format!(
+        r#"#version 330 core
+
+in vec3 v_world_pos;
+out vec4 FragColor;
+
+uniform vec3 u_camera_pos;
+uniform vec3 u_block_min;
+uniform vec3 u_block_max;
+uniform mat4 u_vp;
+
+{helpers}
+
+float sdf_distance(vec3 p) {{
+{dist_body}
+}}
+
+vec3 sdf_color(vec3 p) {{
+{color_body}
+}}
+
+vec3 calc_normal(vec3 p) {{
+    float e = 0.001;
+    return normalize(vec3(
+        sdf_distance(p + vec3(e, 0.0, 0.0)) - sdf_distance(p - vec3(e, 0.0, 0.0)),
+        sdf_distance(p + vec3(0.0, e, 0.0)) - sdf_distance(p - vec3(0.0, e, 0.0)),
+        sdf_distance(p + vec3(0.0, 0.0, e)) - sdf_distance(p - vec3(0.0, 0.0, e))
+    ));
+}}
+
+void main() {{
+    vec3 ro = u_camera_pos;
+    vec3 rd = normalize(v_world_pos - ro);
+
+    // Ray-AABB intersection
+    vec3 t1 = (u_block_min - ro) / rd;
+    vec3 t2 = (u_block_max - ro) / rd;
+    vec3 tmin_v = min(t1, t2);
+    vec3 tmax_v = max(t1, t2);
+    float t_enter = max(max(tmin_v.x, tmin_v.y), tmin_v.z);
+    float t_exit = min(min(tmax_v.x, tmax_v.y), tmax_v.z);
+
+    if (t_enter > t_exit || t_exit < 0.0) discard;
+
+    float t = max(t_enter - 0.01, 0.0);
+
+    bool hit = false;
+    for (int i = 0; i < 128; i++) {{
+        vec3 p = ro + rd * t;
+        float d = sdf_distance(p);
+        if (d < 0.001) {{
+            hit = true;
+            break;
+        }}
+        t += d;
+        if (t > t_exit) break;
+    }}
+
+    if (!hit) discard;
+
+    vec3 p = ro + rd * t;
+    vec3 n = calc_normal(p);
+    vec3 base_color = sdf_color(p);
+
+    // Simple directional lighting
+    vec3 light_dir = normalize(vec3(0.5, 1.0, 0.3));
+    float diff = max(dot(n, light_dir), 0.0);
+    float ambient = 0.15;
+    vec3 color = base_color * (ambient + diff * 0.85);
+
+    FragColor = vec4(color, 1.0);
+
+    // Write depth from hit point
+    vec4 clip = u_vp * vec4(p, 1.0);
+    gl_FragDepth = (clip.z / clip.w) * 0.5 + 0.5;
+}}
+"#
+    )
+}
+
 /// Format an f32 for GLSL output (always includes a decimal point).
 fn ff(v: f32) -> String {
     if v == v.floor() && v.abs() < 1e7 {
