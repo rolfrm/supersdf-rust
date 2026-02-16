@@ -326,8 +326,10 @@ impl Octree {
             _ => {}
         }
 
-        // Leaf condition: stop subdividing at min size or <=1 primitive
-        if (size <= MIN_NODE_SIZE && optimized.count_primitives() <= 6) || optimized.count_primitives() <= 6 {
+        let prim_count = optimized.count_primitives();
+
+        // Leaf condition: stop subdividing at min size or <=6 primitives
+        if (size <= MIN_NODE_SIZE && prim_count <= 6) || prim_count <= 6 {
             let hash = optimized.topology_hash();
             to_compile.entry(hash).or_insert_with(|| optimized.clone());
             let params = sdf_compiler::collect_block_sdf_params(&optimized);
@@ -385,7 +387,7 @@ impl Octree {
 
         // Only one child with simple SDF → collapse to a leaf
         // (must use parent's center/size/optimized so change detection matches next rebuild)
-        if non_empty_count == 1 && optimized.count_primitives() <= 3 {
+        if non_empty_count == 1 && prim_count <= 3 {
             let hash = optimized.topology_hash();
             to_compile.entry(hash).or_insert_with(|| optimized.clone());
             let params = sdf_compiler::collect_block_sdf_params(&optimized);
@@ -413,7 +415,7 @@ impl Octree {
             _ => None,
         });
         if let Some(fh) = first_node {
-            let can_collapse = optimized.count_primitives() < 5
+            let can_collapse = prim_count < 5
                 && children.iter().all(|c| match c {
                     Some(rc) => matches!(rc.as_ref(), OctreeNode::Leaf { optimized_sdf, .. } if optimized_sdf.equals(&fh)),
                     None => true,
@@ -558,17 +560,6 @@ fn build_initial_scene() -> DistanceFieldEnum {
         }
     }
 
-    for i in 0..10 {
-        let x = rng.gen_range(-field_size as f32..field_size as f32);
-        let z = rng.gen_range(-field_size as f32..field_size as f32);
-        let y = 100.0;
-        let hit_loc = sdf.cast_ray(Vec3::new(x,y,z), Vec3::new(0.0,-1.0,0.0), 1000.0);
-        if let Some(hit) = hit_loc {
-
-        }
-            
-    }
-    
     sdf.optimize_bounds()
 }
 
@@ -796,7 +787,7 @@ fn main() {
         // Build VP matrix: FOV matches old shader's focal length of 1.0
         let fovy = 2.0 * (0.5f32).atan();
         let view = mat4_view(cam_pos, dir, up);
-        let proj = mat4_perspective(fovy, aspect, 0.1, 500.0);
+        let proj = mat4_perspective(fovy, aspect, 0.1, 4000.0);
         let vp = mat4_mul(&proj, &view);
 
         unsafe {

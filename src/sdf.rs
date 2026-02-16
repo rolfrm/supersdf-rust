@@ -5,7 +5,6 @@ use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, HashMap};
-use std::env::JoinPathsError;
 use std::f32::consts::SQRT_2;
 use std::fmt::Display;
 use std::{fmt, io};
@@ -179,7 +178,8 @@ impl Sphere {
     }
 
     pub fn overlaps(&self, other: &Sphere) -> bool {
-        (self.center - other.center).length() - self.radius - other.radius < 0.0
+        let combined_radius = self.radius + other.radius;
+        (self.center - other.center).length_squared() < combined_radius * combined_radius
     }
 
     /// Test if this sphere fits entirely inside an axis-aligned box.
@@ -199,7 +199,7 @@ impl Sphere {
         let dy = (self.center.y - box_center.y).clamp(-box_half, box_half);
         let dz = (self.center.z - box_center.z).clamp(-box_half, box_half);
         let closest = Vec3::new(box_center.x + dx, box_center.y + dy, box_center.z + dz);
-        (self.center - closest).length() <= self.radius
+        (self.center - closest).length_squared() <= self.radius * self.radius
     }
 }
 
@@ -330,10 +330,8 @@ pub struct Noise {
 
 impl fmt::Display for Noise{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Perlin {}", self.c1);
-        write!(f, " {}", self.c2);
-        
-        return Ok(());
+        write!(f, "Perlin {}", self.c1)?;
+        write!(f, " {}", self.c2)
     }
 }
 
@@ -356,12 +354,11 @@ impl Noise {
     }
 
     fn color(&self, pos: Vec3) -> Color {
-        let pos1 = pos * 1.0;
-        let pos2 = pos1 * 0.25;
-        let pos3 = pos1 * 4.0;
+        let pos2 = pos * 0.25;
+        let pos3 = pos * 4.0;
         let n1 = self
             .noise
-            .get([pos1.x as f64, pos1.y as f64, pos1.z as f64]);
+            .get([pos.x as f64, pos.y as f64, pos.z as f64]);
         let n2 = self
             .noise
             .get([pos2.x as f64, pos2.y as f64, pos2.z as f64]);
@@ -431,7 +428,7 @@ impl Add {
 
     fn distance(&self, pos: Vec3) -> f32 {
         let d1 = self.bounds.distance(pos);
-        if d1 > self.bounds.radius {
+        if d1 > 0.0 {
             return d1;
         }
 
@@ -598,7 +595,7 @@ impl DistanceFieldEnum {
             return left_opt;
         }
         
-        let left_d = d1;
+        let left_d = left_opt.distance(block_center);
         let right_d = right_opt.distance(block_center);
         let half = size / 2.0;
         if left_d > right_d + half * SQRT3 * SQRT_2{
@@ -670,15 +667,16 @@ impl DistanceFieldEnum {
             }
             
             _ =>{
-                let sb = self.calculate_sphere_bounds();
-                if !sb.overlaps_aabb(block_center, size / 2.0){
-                    return Rc::new(DistanceFieldEnum::Empty);
-                }
+                // Distance-based pruning: only discard this primitive if a closer
+                // one exists (min_d is finite) and this one is too far away to
+                // matter within the block. The overlaps_aabb check alone is wrong
+                // here because a non-overlapping sphere can still be the closest
+                // primitive contributing the minimum distance at the block center.
                 if self.distance(block_center) > min_d + size / 2.0 * SQRT3 * 2.0 {
                     return Rc::new(DistanceFieldEnum::Empty);
                 }
                 return Rc::new(self.clone())
-            } 
+            }
         }
     }
 
@@ -804,40 +802,42 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Subtract(sub) => {
                 let left2 = sub.left.optimize_bounds();
                 let subbounds = sub.subtract.calculate_sphere_bounds();
-                //println!("Subtract + add? {}", left2);
-                let mut new_left : DistanceFieldEnum = match &left2 {
-                    DistanceFieldEnum::Add(inner_add ) => {
-                        let left_bounds = inner_add.left.calculate_sphere_bounds();
-                        let right_bounds = inner_add.right.calculate_sphere_bounds();
-                        if !left_bounds.overlaps(&subbounds) {
-                            if !right_bounds.overlaps(&subbounds) {
-                                // neither bounds overlaps the subtraction -> just delete it.
-                                DistanceFieldEnum::Add(inner_add.clone())
-                            }else {
-                                // left does not overlap -> move the subtraction into the right
-                                Add::new(inner_add.left.as_ref().clone(), Subtract::new(inner_add.right.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into())
-                                 .into()
-                            }
-                        }else if !right_bounds.overlaps(&subbounds) {
-                            // only right overlaps -> move it into the right.
-                            Add::new(Subtract::new(inner_add.left.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into(),
-                               inner_add.right.as_ref().clone()).into()
-                        }else{
-                            left2
-                        }
-                        
-                    },
-                    _=> self.clone()
-                };
 
-                if let DistanceFieldEnum::Subtract(sub2) = &new_left{
+                // If the left side is an Add, try to push the subtraction into
+                // only the branch(es) whose bounds overlap the subtracted volume.
+                if let DistanceFieldEnum::Add(inner_add) = &left2 {
+                    let left_bounds = inner_add.left.calculate_sphere_bounds();
+                    let right_bounds = inner_add.right.calculate_sphere_bounds();
+                    let left_overlaps = left_bounds.overlaps(&subbounds);
+                    let right_overlaps = right_bounds.overlaps(&subbounds);
+
+                    if !left_overlaps && !right_overlaps {
+                        // neither bounds overlaps the subtraction -> subtraction has no effect
+                        return DistanceFieldEnum::Add(inner_add.clone());
+                    } else if !left_overlaps {
+                        // left does not overlap -> move the subtraction into the right only
+                        return Add::new(
+                            inner_add.left.as_ref().clone(),
+                            Subtract::new(inner_add.right.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into()
+                        ).into();
+                    } else if !right_overlaps {
+                        // right does not overlap -> move the subtraction into the left only
+                        return Add::new(
+                            Subtract::new(inner_add.left.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into(),
+                            inner_add.right.as_ref().clone()
+                        ).into();
+                    }
+                    // both overlap -> fall through to keep the subtraction on the whole Add
+                }
+
+                // Try to combine nested subtracts: Subtract(Subtract(A, B), C) → Subtract(A, Add(B, C))
+                let mut new_left = Subtract::new(left2, sub.subtract.as_ref().clone(), sub.k).into();
+                if let DistanceFieldEnum::Subtract(sub2) = &new_left {
                     if let DistanceFieldEnum::Subtract(sub3) = sub2.left.as_ref() {
                         let comb = sub3.subtract.insert_2(sub2.subtract.as_ref().clone())
                             .optimize_bounds();
                         new_left = Subtract::new(sub3.left.as_ref().clone(), comb, sub3.k).into();
                     }
-                }else {
-                    new_left = new_left.subtract(sub.subtract.as_ref().clone());
                 }
 
                 new_left
@@ -902,25 +902,25 @@ impl DistanceFieldEnum {
             },
             DistanceFieldEnum::Coloring(a, i) => {
                 if let DistanceFieldEnum::Coloring(b, i2) = other {
-                    return  b.eq(&b) && i.equals(i2);
+                    return  a.eq(b) && i.equals(i2);
                 }
                 false
             },
             DistanceFieldEnum::Subtract(a) => {
                 if let DistanceFieldEnum::Subtract(b) = other {
-                    return Rc::<DistanceFieldEnum>::ptr_eq(&a.left,&b.left) && 
+                    return Rc::<DistanceFieldEnum>::ptr_eq(&a.left,&b.left) &&
                         Rc::<DistanceFieldEnum>::ptr_eq(&a.subtract,&b.subtract);
                 }
                 false
-                
+
             },
-            
+
             DistanceFieldEnum::Empty => {
                 if let DistanceFieldEnum::Empty = other {
                     return true;
                 }
                 return false;
-                
+
             },
         }
     }
@@ -942,7 +942,7 @@ impl DistanceFieldEnum {
             },
             DistanceFieldEnum::Coloring(a, i) => {
                 if let DistanceFieldEnum::Coloring(b, i2) = other {
-                    return Rc::<DistanceFieldEnum>::ptr_eq(&i,&i2) && b.eq(&b);
+                    return Rc::<DistanceFieldEnum>::ptr_eq(&i,&i2) && a.eq(b);
                 }
                 false
             },
@@ -984,7 +984,7 @@ impl DistanceFieldEnum {
         }
     }
     pub fn cached(&self, m : &mut HashSet<DistanceFieldEnum>) -> DistanceFieldEnum{
-        
+
         if !m.contains(self) && m.insert(self.clone()){
             match self {
                 DistanceFieldEnum::Primitive(_) => {},
@@ -997,7 +997,7 @@ impl DistanceFieldEnum {
                     sub.left.build_map(m);
                     sub.subtract.build_map(m);
                 },
-                DistanceFieldEnum::Empty => todo!(),
+                DistanceFieldEnum::Empty => {},
             }
         }
         return m.get(&self).unwrap().clone();
@@ -1084,9 +1084,6 @@ impl Hash for DistanceFieldEnum {
             },
             DistanceFieldEnum::Empty => {
                 321321532.hash(state);
-            }
-            _ => {
-                core::mem::discriminant(self).hash(state);
             }
         }
         
