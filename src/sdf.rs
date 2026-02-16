@@ -428,7 +428,7 @@ impl Add {
 
     fn distance(&self, pos: Vec3) -> f32 {
         let d1 = self.bounds.distance(pos);
-        if d1 > 0.0 {
+        if d1 > self.bounds.radius {
             return d1;
         }
 
@@ -662,11 +662,10 @@ impl DistanceFieldEnum {
             }
             
             _ =>{
-                // Distance-based pruning: only discard this primitive if a closer
-                // one exists (min_d is finite) and this one is too far away to
-                // matter within the block. The overlaps_aabb check alone is wrong
-                // here because a non-overlapping sphere can still be the closest
-                // primitive contributing the minimum distance at the block center.
+                let sb = self.calculate_sphere_bounds();
+                if !sb.overlaps_aabb(block_center, size / 2.0) && min_d.is_finite() {
+                    return Rc::new(DistanceFieldEnum::Empty);
+                }
                 if self.distance(block_center) > min_d + size / 2.0 * SQRT3 * 2.0 {
                     return Rc::new(DistanceFieldEnum::Empty);
                 }
