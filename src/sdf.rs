@@ -1024,6 +1024,31 @@ impl DistanceFieldEnum {
         }
     }
 
+    /// Count primitives but stop early once the count exceeds `limit`.
+    /// Returns the actual count if <= limit, or limit + 1 to indicate "more than limit".
+    pub fn count_primitives_up_to(&self, limit: u32) -> u32 {
+        self.count_primitives_bounded(limit, 0)
+    }
+
+    fn count_primitives_bounded(&self, limit: u32, acc: u32) -> u32 {
+        if acc > limit {
+            return acc;
+        }
+        match self {
+            DistanceFieldEnum::Primitive(_) => acc + 1,
+            DistanceFieldEnum::Coloring(_, inner) => inner.count_primitives_bounded(limit, acc),
+            DistanceFieldEnum::Add(add) => {
+                let left_count = add.left.count_primitives_bounded(limit, acc);
+                if left_count > limit {
+                    return left_count;
+                }
+                add.right.count_primitives_bounded(limit, left_count)
+            }
+            DistanceFieldEnum::Subtract(sub) => sub.left.count_primitives_bounded(limit, acc),
+            DistanceFieldEnum::Empty => acc,
+        }
+    }
+
     pub fn first_add(&self) -> Option<Add> {
         match self{
             DistanceFieldEnum::Primitive(_) => None,

@@ -326,7 +326,7 @@ impl Octree {
             _ => {}
         }
 
-        let prim_count = optimized.count_primitives();
+        let prim_count = optimized.count_primitives_up_to(6);
 
         // Leaf condition: stop subdividing at min size or <=6 primitives
         if (size <= MIN_NODE_SIZE && prim_count <= 6) || prim_count <= 6 {
