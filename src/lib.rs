@@ -1,8 +1,10 @@
-mod sdf;
-mod vec3;
+pub mod sdf;
+pub mod vec3;
 mod vec2;
-mod color;
+pub mod color;
 pub mod sdf_compiler;
+pub mod mat4;
+pub mod octree;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
