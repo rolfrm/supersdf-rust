@@ -469,12 +469,6 @@ impl DistanceField for DistanceFieldEnum {
     }
 }
 
-impl DistanceField for Add {
-    fn distance(&self, pos: Vec3) -> f32 {
-        f32::min(self.left.distance(pos), self.right.distance(pos))
-    }
-}
-
 #[derive(Clone, PartialEq, Debug)]
 pub struct Subtract {
      pub(crate) left : Rc<DistanceFieldEnum>,
@@ -567,7 +561,7 @@ impl DistanceFieldEnum {
     pub fn cast_ray(&self, pos: Vec3, dir: Vec3, max_dist: f32) -> Option<(f32, Vec3)> {
         let mut total_distance = 0.0;
         let mut mpos = pos;
-        loop {
+        for _ in 0..512 {
             let d = self.distance(mpos);
 
             total_distance += d;
@@ -579,6 +573,7 @@ impl DistanceFieldEnum {
                 return Some((total_distance, mpos));
             }
         }
+        None
     }
 
     pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>, min_d : f32) -> Rc<DistanceFieldEnum> {
@@ -966,8 +961,8 @@ impl DistanceFieldEnum {
     }
 
     pub fn build_map(&self, m : &mut HashSet<DistanceFieldEnum>){
-        
-        if !m.contains(self) && m.insert(self.clone()){
+
+        if m.insert(self.clone()){
             match self {
                 DistanceFieldEnum::Primitive(_) => {},
                 DistanceFieldEnum::Coloring(_, inner) => inner.build_map(m),
@@ -985,7 +980,7 @@ impl DistanceFieldEnum {
     }
     pub fn cached(&self, m : &mut HashSet<DistanceFieldEnum>) -> DistanceFieldEnum{
 
-        if !m.contains(self) && m.insert(self.clone()){
+        if m.insert(self.clone()){
             match self {
                 DistanceFieldEnum::Primitive(_) => {},
                 DistanceFieldEnum::Coloring(_, inner) => inner.build_map(m),
@@ -1142,7 +1137,7 @@ impl PartialEq for DistanceFieldEnum{
             },
             DistanceFieldEnum::Add(add) => {
                 if let DistanceFieldEnum::Add(add2) = other {
-                    return add2.hash == add.hash// && add.left.eq(&add2.left) && add.right.eq(&add2.right);
+                    return add2.hash == add.hash && add.left.eq(&add2.left) && add.right.eq(&add2.right);
                 }
                 return false;
             },

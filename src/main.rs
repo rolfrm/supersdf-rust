@@ -556,7 +556,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
                 rng.gen_range(0.9..1.0),
                 rng.gen_range(0.2..0.22),
             );
-            sdf = Add::new(sdf, DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color)).into();
+            sdf = sdf.insert_2(DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color));
         }
     }
 
