@@ -361,7 +361,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
             sdf = sdf.insert_2(DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color));
         }
     }
-    sdf = sdf.insert_2(DistanceFieldEnum::aabb(Vec3::new(0.0, -2020.0, 0.0), Vec3::new(field_size as f32, 2000.0, field_size as f32)));
+    sdf = sdf.insert_2(DistanceFieldEnum::aabb(Vec3::new(0.0, -2018.0, 0.0), Vec3::new(field_size as f32, 2000.0, field_size as f32)));
     sdf.optimize_bounds()
 }
 
@@ -514,20 +514,24 @@ fn main() {
         if let OctreeNode2::Leaf { center, size, optimized_sdf } = l {
             let mut chunk = VoxelChunk { voxels: [0; 64] };
             let mut index = 0;
+            let mut any = false;
             for z in -2..2 {
                 for y in -2..2 {
                     for x in -2..2 {
                         let pt = Vec3::new(x as f32, y as f32, z as f32);
                         let d = optimized_sdf.distance(pt + *center);
-                        if d < 0.0 {
+                        if d < 0.2 && d > -1.0{
                             chunk.voxels[index] = 1;
+                            any = true;
                         }
                         index += 1;
                     }
                 }
             }
-            all_chunks.push(chunk);
-            all_positions.push([center.x - 2.0, center.y - 2.0, center.z - 2.0]);
+            if any {
+                all_chunks.push(chunk);
+                all_positions.push([center.x - 2.0, center.y - 2.0, center.z - 2.0]);
+            }
             let _ = size; // suppress unused warning
         }
     });
