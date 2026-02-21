@@ -8,7 +8,7 @@ use supersdf::sdf_compiler;
 use supersdf::vec3::Vec3;
 use supersdf::mat4::{self, Frustum};
 use supersdf::octree::{OctreeNode, ROOT_SIZE};
-use octree2::{OctreeNode as OctreeNode2, build_octree};
+use octree2::build_octree;
 
 use gl::types::*;
 use glfw::{Action, Context, Key, MouseButton};
@@ -79,6 +79,7 @@ const VOXEL_VERTEX_SHADER_SRC: &str = r#"
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 iChunkPos;
 layout (location = 2) in uint iAtlasLayer;
+layout (location = 3) in float iChunkSize;
 
 out vec3 vLocalPos;
 out vec3 vWorldPos;
@@ -93,7 +94,7 @@ void main()
     vAtlasLayer  = iAtlasLayer;
     vChunkOrigin = iChunkPos;
 
-    vec3 worldPos = iChunkPos + aPos * 4.0;
+    vec3 worldPos = iChunkPos + aPos * iChunkSize;
     vWorldPos     = worldPos;
     gl_Position   = uViewProj * vec4(worldPos, 1.0);
 }
@@ -375,17 +376,100 @@ pub struct VoxelChunk {
 pub struct VoxelInstanceData {
     pub chunk_pos: [f32; 3],   // world position
     pub atlas_layer: u32,      // brick index (layer within its super chunk's texture)
+    pub chunk_size: f32,       // 4.0 for LOD 0, 8.0 for LOD 1, etc.
 }
 
 const MAX_LAYERS_PER_TEXTURE: usize = 2048;
+const LOD_FACTOR: f32 = 30.0;   // use coarse LOD when distance > size * LOD_FACTOR
+const MAX_LOD_SIZE: f32 = 64.0; // max branch size to voxelize for LOD
+
+/// Voxelize an octree node (leaf or branch) at 4x4x4 resolution.
+/// `center` is the node center, `size` is the node extent.
+/// Each voxel covers (size/4) world units.
+fn voxelize_node(center: &Vec3, size: f32, sdf: &DistanceFieldEnum) -> Option<VoxelChunk> {
+    let step = size / 4.0;
+    let half = size / 2.0;
+    let mut chunk = VoxelChunk { voxels: [0; 64] };
+    let mut any = false;
+    let mut index = 0;
+    for z in 0..4 {
+        for y in 0..4 {
+            for x in 0..4 {
+                let pt = Vec3::new(
+                    center.x - half + (x as f32 + 0.5) * step,
+                    center.y - half + (y as f32 + 0.5) * step,
+                    center.z - half + (z as f32 + 0.5) * step,
+                );
+                let d = sdf.distance(pt);
+                if d < step * 0.5 && d > -step {
+                    chunk.voxels[index] = 1;
+                    any = true;
+                }
+                index += 1;
+            }
+        }
+    }
+    if any { Some(chunk) } else { None }
+}
+
+struct BrickInfo {
+    chunk: VoxelChunk,
+    center: Vec3,
+    size: f32,
+}
+
+/// Walk the octree and voxelize all leaves (size=4) and branches up to MAX_LOD_SIZE.
+fn collect_all_bricks(node: &octree2::OctreeNode) -> Vec<BrickInfo> {
+    let mut bricks = Vec::new();
+    let mut stack: Vec<&octree2::OctreeNode> = vec![node];
+    while let Some(n) = stack.pop() {
+        match n {
+            octree2::OctreeNode::Empty => {}
+            octree2::OctreeNode::Leaf { center, size, optimized_sdf } => {
+                // Voxelize leaf the same way as before but using voxelize_node
+                if let Some(chunk) = voxelize_node(center, *size, optimized_sdf) {
+                    bricks.push(BrickInfo { chunk, center: *center, size: *size });
+                }
+            }
+            octree2::OctreeNode::Branch { center, size, optimized_sdf, children } => {
+                // Voxelize this branch as a LOD brick if small enough
+                if *size <= MAX_LOD_SIZE {
+                    if let Some(chunk) = voxelize_node(center, *size, optimized_sdf) {
+                        bricks.push(BrickInfo { chunk, center: *center, size: *size });
+                    }
+                }
+                // Always recurse into children (we need leaves too)
+                for child in children.iter().flatten() {
+                    stack.push(child.as_ref());
+                }
+            }
+        }
+    }
+    bricks
+}
+
+/// Key for brick lookup: quantized center position + size
+fn brick_key(center: &Vec3, size: f32) -> (i32, i32, i32, i32) {
+    (
+        (center.x * 4.0).round() as i32,
+        (center.y * 4.0).round() as i32,
+        (center.z * 4.0).round() as i32,
+        (size * 4.0).round() as i32,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct BrickLocation {
+    super_chunk_idx: usize,
+    local_layer: u32,
+    chunk_pos: [f32; 3],
+    chunk_size: f32,
+}
 
 struct SuperChunk {
     tex: GLuint,           // GL_TEXTURE_2D_ARRAY, up to MAX_LAYERS_PER_TEXTURE layers
     vao: GLuint,           // VAO with cube geometry + per-instance data
     instance_vbo: GLuint,  // VBO for VoxelInstanceData
-    instance_count: usize, // number of instances in this super chunk
-    aabb_center: Vec3,     // center of bounding box (for frustum culling)
-    aabb_half: Vec3,       // half-extents of bounding box
 }
 
 unsafe fn upload_chunk(tex: u32, layer: u32, chunk: &VoxelChunk) {
@@ -507,38 +591,14 @@ fn main() {
     let n_leaves = oct2.count_leaves();
     println!("Leaves: {}", n_leaves);
 
-    // Collect all leaf data (chunks + instances) first
-    let mut all_chunks: Vec<VoxelChunk> = Vec::new();
-    let mut all_positions: Vec<[f32; 3]> = Vec::new();
-    oct2.for_each_leaf(&mut |l| {
-        if let OctreeNode2::Leaf { center, size, optimized_sdf } = l {
-            let mut chunk = VoxelChunk { voxels: [0; 64] };
-            let mut index = 0;
-            let mut any = false;
-            for z in -2..2 {
-                for y in -2..2 {
-                    for x in -2..2 {
-                        let pt = Vec3::new(x as f32, y as f32, z as f32);
-                        let d = optimized_sdf.distance(pt + *center);
-                        if d < 0.2 && d > -1.0{
-                            chunk.voxels[index] = 1;
-                            any = true;
-                        }
-                        index += 1;
-                    }
-                }
-            }
-            if any {
-                all_chunks.push(chunk);
-                all_positions.push([center.x - 2.0, center.y - 2.0, center.z - 2.0]);
-            }
-            let _ = size; // suppress unused warning
-        }
-    });
+    // Collect all bricks (leaves + LOD branches) from the octree
+    let all_bricks = collect_all_bricks(&oct2);
+    let total = all_bricks.len();
+    println!("Total bricks (leaves + LOD): {}", total);
 
-    // Build super chunks: split leaves into groups of MAX_LAYERS_PER_TEXTURE
+    // Build super chunks: split bricks into groups of MAX_LAYERS_PER_TEXTURE
     let mut super_chunks: Vec<SuperChunk> = Vec::new();
-    let total = all_chunks.len();
+    let mut brick_map: HashMap<(i32, i32, i32, i32), BrickLocation> = HashMap::new();
     let n_super = if total == 0 { 0 } else { (total + MAX_LAYERS_PER_TEXTURE - 1) / MAX_LAYERS_PER_TEXTURE };
 
     for sc_idx in 0..n_super {
@@ -563,18 +623,24 @@ fn main() {
             gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
         }
 
-        // Upload brick data and build instance buffer for this super chunk
-        let mut instances: Vec<VoxelInstanceData> = Vec::with_capacity(layer_count);
+        // Upload brick data
         for i in start..end {
             let local_layer = (i - start) as u32;
-            unsafe { upload_chunk(tex, local_layer, &all_chunks[i]); }
-            instances.push(VoxelInstanceData {
-                atlas_layer: local_layer,
-                chunk_pos: all_positions[i],
+            unsafe { upload_chunk(tex, local_layer, &all_bricks[i].chunk); }
+
+            let b = &all_bricks[i];
+            let half = b.size / 2.0;
+            let chunk_pos = [b.center.x - half, b.center.y - half, b.center.z - half];
+            let key = brick_key(&b.center, b.size);
+            brick_map.insert(key, BrickLocation {
+                super_chunk_idx: sc_idx,
+                local_layer,
+                chunk_pos,
+                chunk_size: b.size,
             });
         }
 
-        // Create VAO + instance VBO for this super chunk
+        // Create VAO + instance VBO for this super chunk (DYNAMIC_DRAW for per-frame updates)
         let mut sc_vao: GLuint = 0;
         let mut sc_instance_vbo: GLuint = 0;
         unsafe {
@@ -587,14 +653,14 @@ fn main() {
                 (3 * std::mem::size_of::<f32>()) as GLsizei, ptr::null());
             gl::EnableVertexAttribArray(0);
 
-            // Per-instance data buffer
+            // Per-instance data buffer — pre-allocate for max capacity
             gl::GenBuffers(1, &mut sc_instance_vbo);
             gl::BindBuffer(gl::ARRAY_BUFFER, sc_instance_vbo);
             gl::BufferData(
                 gl::ARRAY_BUFFER,
-                (instances.len() * std::mem::size_of::<VoxelInstanceData>()) as GLsizeiptr,
-                instances.as_ptr() as *const _,
-                gl::STATIC_DRAW,
+                (layer_count * std::mem::size_of::<VoxelInstanceData>()) as GLsizeiptr,
+                ptr::null(),
+                gl::DYNAMIC_DRAW,
             );
 
             let stride = std::mem::size_of::<VoxelInstanceData>() as GLsizei;
@@ -610,34 +676,22 @@ fn main() {
             gl::EnableVertexAttribArray(2);
             gl::VertexAttribDivisor(2, 1);
 
+            // location 3: iChunkSize (float, offset 16)
+            gl::VertexAttribPointer(3, 1, gl::FLOAT, gl::FALSE, stride,
+                (4 * std::mem::size_of::<f32>()) as *const _);
+            gl::EnableVertexAttribArray(3);
+            gl::VertexAttribDivisor(3, 1);
+
             gl::BindVertexArray(0);
         }
-
-        // Compute AABB for this super chunk (bricks are 4x4x4 cubes at chunk_pos)
-        let mut mins = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
-        let mut maxs = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
-        for inst in &instances {
-            let p = inst.chunk_pos;
-            mins.x = mins.x.min(p[0]);
-            mins.y = mins.y.min(p[1]);
-            mins.z = mins.z.min(p[2]);
-            maxs.x = maxs.x.max(p[0] + 4.0);
-            maxs.y = maxs.y.max(p[1] + 4.0);
-            maxs.z = maxs.z.max(p[2] + 4.0);
-        }
-        let aabb_center = (mins + maxs) * 0.5;
-        let aabb_half = (maxs - mins) * 0.5;
 
         super_chunks.push(SuperChunk {
             tex,
             vao: sc_vao,
             instance_vbo: sc_instance_vbo,
-            instance_count: instances.len(),
-            aabb_center,
-            aabb_half,
         });
     }
-    println!("Super chunks: {}, total layers: {}", super_chunks.len(), total);
+    println!("Super chunks: {}, total bricks: {}", super_chunks.len(), total);
 
     let voxel_prog = {
         let vs = compile_gl_shader(VOXEL_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
@@ -904,30 +958,81 @@ fn main() {
                 }
             } // end path_tracing_enabled
             else {
-            // Voxel rendering: frustum cull + distance sort super chunks
+            // Voxel rendering with LOD: per-frame octree traversal
             if !super_chunks.is_empty() {
                 let frustum = Frustum::from_vp(&vp);
 
-                // Build sorted index list: cull by frustum, sort front-to-back
-                let mut visible: Vec<usize> = (0..super_chunks.len())
-                    .filter(|&i| !frustum.cull_aabb(super_chunks[i].aabb_center, super_chunks[i].aabb_half.x.max(super_chunks[i].aabb_half.y).max(super_chunks[i].aabb_half.z)))
+                // Per-super-chunk instance lists (rebuilt each frame)
+                let mut sc_instances: Vec<Vec<VoxelInstanceData>> = (0..super_chunks.len())
+                    .map(|_| Vec::new())
                     .collect();
-                visible.sort_by(|&a, &b| {
-                    let da = (super_chunks[a].aabb_center - cam_pos).length_squared();
-                    let db = (super_chunks[b].aabb_center - cam_pos).length_squared();
-                    da.partial_cmp(&db).unwrap()
-                });
 
+                // Traverse octree with LOD early termination
+                let mut lod_stack: Vec<&octree2::OctreeNode> = vec![&oct2];
+                while let Some(node) = lod_stack.pop() {
+                    match node {
+                        octree2::OctreeNode::Empty => {}
+                        octree2::OctreeNode::Leaf { center, size, .. } => {
+                            if frustum.cull_aabb(*center, *size / 2.0) { continue; }
+                            let key = brick_key(center, *size);
+                            if let Some(loc) = brick_map.get(&key) {
+                                sc_instances[loc.super_chunk_idx].push(VoxelInstanceData {
+                                    chunk_pos: loc.chunk_pos,
+                                    atlas_layer: loc.local_layer,
+                                    chunk_size: loc.chunk_size,
+                                });
+                            }
+                        }
+                        octree2::OctreeNode::Branch { center, size, children, .. } => {
+                            if frustum.cull_aabb(*center, *size / 2.0) { continue; }
+
+                            // LOD check: if far enough and we have a coarse brick, use it
+                            let dist = (*center - cam_pos).length();
+                            if *size <= MAX_LOD_SIZE && dist > *size * LOD_FACTOR {
+                                let key = brick_key(center, *size);
+                                if let Some(loc) = brick_map.get(&key) {
+                                    sc_instances[loc.super_chunk_idx].push(VoxelInstanceData {
+                                        chunk_pos: loc.chunk_pos,
+                                        atlas_layer: loc.local_layer,
+                                        chunk_size: loc.chunk_size,
+                                    });
+                                    continue; // skip children
+                                }
+                            }
+
+                            // Recurse into children front-to-back
+                            let near = ((cam_pos.x > center.x) as usize)
+                                | (((cam_pos.y > center.y) as usize) << 1)
+                                | (((cam_pos.z > center.z) as usize) << 2);
+                            for &mask in &[7usize, 6, 5, 3, 4, 2, 1, 0] {
+                                if let Some(ref child) = children[near ^ mask] {
+                                    lod_stack.push(child.as_ref());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Upload instance data and draw
                 gl::UseProgram(voxel_prog.0);
                 gl::UniformMatrix4fv(voxel_prog.1, 1, gl::FALSE, vp.as_ptr());
                 gl::Uniform1i(voxel_prog.2, 0);
                 gl::Uniform3f(voxel_prog.3, cam_pos.x, cam_pos.y, cam_pos.z);
                 gl::ActiveTexture(gl::TEXTURE0);
-                for &i in &visible {
+
+                for (i, instances) in sc_instances.iter().enumerate() {
+                    if instances.is_empty() { continue; }
                     let sc = &super_chunks[i];
+                    gl::BindBuffer(gl::ARRAY_BUFFER, sc.instance_vbo);
+                    gl::BufferSubData(
+                        gl::ARRAY_BUFFER,
+                        0,
+                        (instances.len() * std::mem::size_of::<VoxelInstanceData>()) as GLsizeiptr,
+                        instances.as_ptr() as *const _,
+                    );
                     gl::BindTexture(gl::TEXTURE_2D_ARRAY, sc.tex);
                     gl::BindVertexArray(sc.vao);
-                    gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, sc.instance_count as GLsizei);
+                    gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, instances.len() as GLsizei);
                 }
                 gl::BindVertexArray(0);
             }
