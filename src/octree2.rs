@@ -5,7 +5,7 @@ use supersdf::sdf::*;
 use supersdf::vec3::Vec3;
 
 pub const MIN_NODE_SIZE: f32 = 4.0;
-pub const ROOT_SIZE: f32 = 10000.0;
+pub const ROOT_SIZE: f32 = 1024.0 * 8.0;
 
 #[derive(Clone)]
 pub enum OctreeNode {
@@ -191,3 +191,53 @@ pub fn build_octree(sdf: &DistanceFieldEnum, root_size: f32) -> OctreeNode {
         &mut reused_count,
     )
 }
+
+
+impl std::hash::Hash for OctreeNode {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            OctreeNode::Leaf { center, size, .. } => {
+                0u8.hash(state);
+                center.x.to_bits().hash(state);
+                center.y.to_bits().hash(state);
+                center.z.to_bits().hash(state);
+                size.to_bits().hash(state);
+            }
+            OctreeNode::Branch { center, size, .. } => {
+                1u8.hash(state);
+                center.x.to_bits().hash(state);
+                center.y.to_bits().hash(state);
+                center.z.to_bits().hash(state);
+                size.to_bits().hash(state);
+            }
+            OctreeNode::Empty => {
+                2u8.hash(state);
+            }
+        }
+    }
+}
+
+impl PartialEq for OctreeNode {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                OctreeNode::Leaf { center: c1, size: s1, .. },
+                OctreeNode::Leaf { center: c2, size: s2, .. },
+            ) => c1.x.to_bits() == c2.x.to_bits()
+                && c1.y.to_bits() == c2.y.to_bits()
+                && c1.z.to_bits() == c2.z.to_bits()
+                && s1.to_bits() == s2.to_bits(),
+            (
+                OctreeNode::Branch { center: c1, size: s1, .. },
+                OctreeNode::Branch { center: c2, size: s2, .. },
+            ) => c1.x.to_bits() == c2.x.to_bits()
+                && c1.y.to_bits() == c2.y.to_bits()
+                && c1.z.to_bits() == c2.z.to_bits()
+                && s1.to_bits() == s2.to_bits(),
+            (OctreeNode::Empty, OctreeNode::Empty) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for OctreeNode {}
