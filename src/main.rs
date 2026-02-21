@@ -345,13 +345,13 @@ fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
     
-    let field_size = 35;
+    let field_size = 1000;
 
     for i in (-field_size..field_size).step_by(10) {
         for j in (-field_size..field_size).step_by(10) {
             let x = i as f32 + rng.gen_range(-2.0..2.0);
             let z = j as f32 + rng.gen_range(-2.0..2.0);
-            let y = -20.0 + rng.gen_range(-2.0..2.0) + j as f32 * 0.2;
+            let y = -20.0 + rng.gen_range(-2.0..2.0);
             let r = rng.gen_range(8.0..10.0);
             let color = Color::rgb(
                 rng.gen_range(0.2..0.22),
@@ -361,7 +361,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
             sdf = sdf.insert_2(DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color));
         }
     }
-
+    sdf = sdf.insert_2(DistanceFieldEnum::aabb(Vec3::new(0.0, -2020.0, 0.0), Vec3::new(field_size as f32, 2000.0, field_size as f32)));
     sdf.optimize_bounds()
 }
 
@@ -374,7 +374,18 @@ pub struct VoxelChunk {
 #[repr(C)]
 pub struct VoxelInstanceData {
     pub chunk_pos: [f32; 3],   // world position
-    pub atlas_layer: u32,      // brick index
+    pub atlas_layer: u32,      // brick index (layer within its super chunk's texture)
+}
+
+const MAX_LAYERS_PER_TEXTURE: usize = 2048;
+
+struct SuperChunk {
+    tex: GLuint,           // GL_TEXTURE_2D_ARRAY, up to MAX_LAYERS_PER_TEXTURE layers
+    vao: GLuint,           // VAO with cube geometry + per-instance data
+    instance_vbo: GLuint,  // VBO for VoxelInstanceData
+    instance_count: usize, // number of instances in this super chunk
+    aabb_center: Vec3,     // center of bounding box (for frustum culling)
+    aabb_half: Vec3,       // half-extents of bounding box
 }
 
 unsafe fn upload_chunk(tex: u32, layer: u32, chunk: &VoxelChunk) {
@@ -492,46 +503,22 @@ fn main() {
     };
     let mut show_debug_boxes = false;
 
-    let oct2 = build_octree(&sdf, 512.0);
-    println!("Leaves: {}", oct2.count_leaves());
+    let oct2 = build_octree(&sdf, 2048.0);
+    let n_leaves = oct2.count_leaves();
+    println!("Leaves: {}", n_leaves);
 
-    let mut tex = 0;
-    let mut instances = vec!();
-    unsafe {
-        gl::GenTextures(1, &mut tex);
-        gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
-
-        // Layout: one layer per brick, each layer is 16×4 (col = x + z*4, row = y).
-        // 714 layers is well under GL_MAX_ARRAY_TEXTURE_LAYERS (2048 on macOS).
-        // The old TEXTURE_3D approach put 4*N slices in the Z dim, hitting the 2048 limit.
-        let n_bricks = oct2.count_leaves() as i32;
-        gl::TexStorage3D(
-            gl::TEXTURE_2D_ARRAY,
-            1,
-            gl::R8,
-            16, 4, n_bricks, // width=16, height=4, depth=N layers
-        );
-
-        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
-        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
-        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_BASE_LEVEL, 0);
-        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAX_LEVEL, 0);
-        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-    
-    let mut layer = 0 as u32;
+    // Collect all leaf data (chunks + instances) first
+    let mut all_chunks: Vec<VoxelChunk> = Vec::new();
+    let mut all_positions: Vec<[f32; 3]> = Vec::new();
     oct2.for_each_leaf(&mut |l| {
-        if let OctreeNode2::Leaf {center, size, optimized_sdf} = l {
-            let mut chunk = VoxelChunk {
-                voxels: [0; 64],
-            };
+        if let OctreeNode2::Leaf { center, size, optimized_sdf } = l {
+            let mut chunk = VoxelChunk { voxels: [0; 64] };
             let mut index = 0;
             for z in -2..2 {
                 for y in -2..2 {
                     for x in -2..2 {
                         let pt = Vec3::new(x as f32, y as f32, z as f32);
                         let d = optimized_sdf.distance(pt + *center);
-                        println!("   {}", d);
                         if d < 0.0 {
                             chunk.voxels[index] = 1;
                         }
@@ -539,17 +526,114 @@ fn main() {
                     }
                 }
             }
-            upload_chunk(tex, layer, &chunk);
-            // iChunkPos must be the min corner so the cube [pos, pos+4] matches
-            // the voxel data range [center-2, center+2].
-            instances.push(VoxelInstanceData {atlas_layer: layer, chunk_pos: [center.x - 2.0, center.y - 2.0, center.z - 2.0]});
-            layer = layer + 1;
-            
-            println!("{} {}", center, size);
-            }
+            all_chunks.push(chunk);
+            all_positions.push([center.x - 2.0, center.y - 2.0, center.z - 2.0]);
+            let _ = size; // suppress unused warning
+        }
     });
-        println!("Layers: {}", layer);
+
+    // Build super chunks: split leaves into groups of MAX_LAYERS_PER_TEXTURE
+    let mut super_chunks: Vec<SuperChunk> = Vec::new();
+    let total = all_chunks.len();
+    let n_super = if total == 0 { 0 } else { (total + MAX_LAYERS_PER_TEXTURE - 1) / MAX_LAYERS_PER_TEXTURE };
+
+    for sc_idx in 0..n_super {
+        let start = sc_idx * MAX_LAYERS_PER_TEXTURE;
+        let end = (start + MAX_LAYERS_PER_TEXTURE).min(total);
+        let layer_count = end - start;
+
+        // Create texture for this super chunk
+        let mut tex: GLuint = 0;
+        unsafe {
+            gl::GenTextures(1, &mut tex);
+            gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
+            gl::TexStorage3D(
+                gl::TEXTURE_2D_ARRAY, 1, gl::R8,
+                16, 4, layer_count as i32,
+            );
+            gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+            gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+            gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_BASE_LEVEL, 0);
+            gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAX_LEVEL, 0);
+            gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+        }
+
+        // Upload brick data and build instance buffer for this super chunk
+        let mut instances: Vec<VoxelInstanceData> = Vec::with_capacity(layer_count);
+        for i in start..end {
+            let local_layer = (i - start) as u32;
+            unsafe { upload_chunk(tex, local_layer, &all_chunks[i]); }
+            instances.push(VoxelInstanceData {
+                atlas_layer: local_layer,
+                chunk_pos: all_positions[i],
+            });
+        }
+
+        // Create VAO + instance VBO for this super chunk
+        let mut sc_vao: GLuint = 0;
+        let mut sc_instance_vbo: GLuint = 0;
+        unsafe {
+            gl::GenVertexArrays(1, &mut sc_vao);
+            gl::BindVertexArray(sc_vao);
+
+            // location 0: unit cube vertex positions (shared vbo)
+            gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+            gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE,
+                (3 * std::mem::size_of::<f32>()) as GLsizei, ptr::null());
+            gl::EnableVertexAttribArray(0);
+
+            // Per-instance data buffer
+            gl::GenBuffers(1, &mut sc_instance_vbo);
+            gl::BindBuffer(gl::ARRAY_BUFFER, sc_instance_vbo);
+            gl::BufferData(
+                gl::ARRAY_BUFFER,
+                (instances.len() * std::mem::size_of::<VoxelInstanceData>()) as GLsizeiptr,
+                instances.as_ptr() as *const _,
+                gl::STATIC_DRAW,
+            );
+
+            let stride = std::mem::size_of::<VoxelInstanceData>() as GLsizei;
+
+            // location 1: iChunkPos (vec3, offset 0)
+            gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, stride, ptr::null());
+            gl::EnableVertexAttribArray(1);
+            gl::VertexAttribDivisor(1, 1);
+
+            // location 2: iAtlasLayer (uint, offset 12)
+            gl::VertexAttribIPointer(2, 1, gl::UNSIGNED_INT, stride,
+                (3 * std::mem::size_of::<f32>()) as *const _);
+            gl::EnableVertexAttribArray(2);
+            gl::VertexAttribDivisor(2, 1);
+
+            gl::BindVertexArray(0);
+        }
+
+        // Compute AABB for this super chunk (bricks are 4x4x4 cubes at chunk_pos)
+        let mut mins = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+        let mut maxs = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+        for inst in &instances {
+            let p = inst.chunk_pos;
+            mins.x = mins.x.min(p[0]);
+            mins.y = mins.y.min(p[1]);
+            mins.z = mins.z.min(p[2]);
+            maxs.x = maxs.x.max(p[0] + 4.0);
+            maxs.y = maxs.y.max(p[1] + 4.0);
+            maxs.z = maxs.z.max(p[2] + 4.0);
+        }
+        let aabb_center = (mins + maxs) * 0.5;
+        let aabb_half = (maxs - mins) * 0.5;
+
+        super_chunks.push(SuperChunk {
+            tex,
+            vao: sc_vao,
+            instance_vbo: sc_instance_vbo,
+            instance_count: instances.len(),
+            aabb_center,
+            aabb_half,
+        });
     }
+    println!("Super chunks: {}, total layers: {}", super_chunks.len(), total);
 
     let voxel_prog = {
         let vs = compile_gl_shader(VOXEL_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
@@ -562,44 +646,6 @@ fn main() {
             unsafe { gl::GetUniformLocation(id, CString::new("uCameraPos").unwrap().as_ptr()) },
         )
     };
-
-    // Voxel VAO: cube geometry (loc 0) + per-instance chunk data (locs 1, 2)
-    let (mut voxel_vao, mut voxel_instance_vbo) = (0u32, 0u32);
-    unsafe {
-        gl::GenVertexArrays(1, &mut voxel_vao);
-        gl::BindVertexArray(voxel_vao);
-
-        // location 0: unit cube vertex positions (reuse existing vbo)
-        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-        gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE,
-            (3 * std::mem::size_of::<f32>()) as GLsizei, ptr::null());
-        gl::EnableVertexAttribArray(0);
-
-        // Per-instance data buffer: VoxelInstanceData { chunk_pos: [f32;3], atlas_layer: u32 }
-        gl::GenBuffers(1, &mut voxel_instance_vbo);
-        gl::BindBuffer(gl::ARRAY_BUFFER, voxel_instance_vbo);
-        gl::BufferData(
-            gl::ARRAY_BUFFER,
-            (instances.len() * std::mem::size_of::<VoxelInstanceData>()) as GLsizeiptr,
-            instances.as_ptr() as *const _,
-            gl::STATIC_DRAW,
-        );
-
-        let stride = std::mem::size_of::<VoxelInstanceData>() as GLsizei; // 16 bytes
-
-        // location 1: iChunkPos (vec3, offset 0)
-        gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, stride, ptr::null());
-        gl::EnableVertexAttribArray(1);
-        gl::VertexAttribDivisor(1, 1);
-
-        // location 2: iAtlasLayer (uint, offset 12)
-        gl::VertexAttribIPointer(2, 1, gl::UNSIGNED_INT, stride,
-            (3 * std::mem::size_of::<f32>()) as *const _);
-        gl::EnableVertexAttribArray(2);
-        gl::VertexAttribDivisor(2, 1);
-
-        gl::BindVertexArray(0);
-    }
 
     // Camera state
     let mut cam_pos = Vec3::new(0.0, 0.0, -60.0);
@@ -853,20 +899,35 @@ fn main() {
                     }
                 }
             } // end path_tracing_enabled
-            else{
-            // Voxel rendering pass
-            if !instances.is_empty() {
+            else {
+            // Voxel rendering: frustum cull + distance sort super chunks
+            if !super_chunks.is_empty() {
+                let frustum = Frustum::from_vp(&vp);
+
+                // Build sorted index list: cull by frustum, sort front-to-back
+                let mut visible: Vec<usize> = (0..super_chunks.len())
+                    .filter(|&i| !frustum.cull_aabb(super_chunks[i].aabb_center, super_chunks[i].aabb_half.x.max(super_chunks[i].aabb_half.y).max(super_chunks[i].aabb_half.z)))
+                    .collect();
+                visible.sort_by(|&a, &b| {
+                    let da = (super_chunks[a].aabb_center - cam_pos).length_squared();
+                    let db = (super_chunks[b].aabb_center - cam_pos).length_squared();
+                    da.partial_cmp(&db).unwrap()
+                });
+
                 gl::UseProgram(voxel_prog.0);
                 gl::UniformMatrix4fv(voxel_prog.1, 1, gl::FALSE, vp.as_ptr());
-                gl::Uniform1i(voxel_prog.2, 0); // uBrickAtlas -> texture unit 0
+                gl::Uniform1i(voxel_prog.2, 0);
                 gl::Uniform3f(voxel_prog.3, cam_pos.x, cam_pos.y, cam_pos.z);
                 gl::ActiveTexture(gl::TEXTURE0);
-                gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
-                gl::BindVertexArray(voxel_vao);
-                gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, instances.len() as GLsizei);
+                for &i in &visible {
+                    let sc = &super_chunks[i];
+                    gl::BindTexture(gl::TEXTURE_2D_ARRAY, sc.tex);
+                    gl::BindVertexArray(sc.vao);
+                    gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, sc.instance_count as GLsizei);
+                }
                 gl::BindVertexArray(0);
             }
-                }
+            }
                 
 
             // Debug pass: draw translucent boxes for each leaf node
@@ -927,10 +988,12 @@ fn main() {
         gl::DeleteProgram(debug_prog.0);
         gl::DeleteProgram(voxel_prog.0);
         gl::DeleteVertexArrays(1, &vao);
-        gl::DeleteVertexArrays(1, &voxel_vao);
         gl::DeleteBuffers(1, &vbo);
         gl::DeleteBuffers(1, &ubo);
-        gl::DeleteBuffers(1, &voxel_instance_vbo);
-        gl::DeleteTextures(1, &tex);
+        for sc in &super_chunks {
+            gl::DeleteVertexArrays(1, &sc.vao);
+            gl::DeleteBuffers(1, &sc.instance_vbo);
+            gl::DeleteTextures(1, &sc.tex);
+        }
     }
 }

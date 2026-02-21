@@ -5,7 +5,7 @@ use supersdf::sdf::*;
 use supersdf::vec3::Vec3;
 
 pub const MIN_NODE_SIZE: f32 = 4.0;
-pub const ROOT_SIZE: f32 = 4000.0;
+pub const ROOT_SIZE: f32 = 10000.0;
 
 #[derive(Clone)]
 pub enum OctreeNode {

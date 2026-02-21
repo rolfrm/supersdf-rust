@@ -556,6 +556,10 @@ impl DistanceFieldEnum {
         Sphere::new(pos, radius).into()
     }
 
+    pub fn aabb(pos: Vec3, size: Vec3) -> DistanceFieldEnum {
+        Aabb::new(pos, size).into()
+    }
+
     pub fn add(&self, sdf : DistanceFieldEnum) -> DistanceFieldEnum {
         DistanceFieldEnum::Add(Add::new(self.clone(), sdf.clone()))
     }
