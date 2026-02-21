@@ -121,35 +121,45 @@ float sample_voxel(ivec3 p)
     ).r;
 }
 
-void main()
-{
-    // Ray from camera through this fragment (world space = voxel space, 1 unit = 1 voxel)
-    vec3 rayDir = normalize(vWorldPos - uCameraPos);
+void main()                                                                           
+  {               
+      vec3 rayDir = normalize(vWorldPos - uCameraPos);
+      vec3 pos = clamp(vLocalPos * 4.0, vec3(0.001), vec3(3.999));
 
-    // Entry point in voxel space [0..4).
-    // Clamp away from exact face boundaries to avoid immediate out-of-bounds.
-    vec3 pos = clamp(vLocalPos * 4.0, vec3(0.001), vec3(3.999));
+      // DDA setup
+      ivec3 voxel = ivec3(floor(pos));
+      ivec3 stepDir  = ivec3(sign(rayDir));
+      vec3 tDelta = abs(1.0 / rayDir);          // how far along ray to cross one voxel
+      vec3 fpos = fract(pos);
+      vec3 tMax = vec3(
+          tDelta.x * (rayDir.x >= 0.0 ? (1.0 - fpos.x) : fpos.x),
+          tDelta.y * (rayDir.y >= 0.0 ? (1.0 - fpos.y) : fpos.y),
+          tDelta.z * (rayDir.z >= 0.0 ? (1.0 - fpos.z) : fpos.z)
+      );
 
-    // March through the 4^3 grid; step 0.4 voxel units, 20 steps covers the diagonal
-    for (int i = 0; i < 20; i++) {
-        ivec3 voxel = ivec3(floor(pos));
-        if (any(lessThan(voxel, ivec3(0))) || any(greaterThan(voxel, ivec3(3))))
-            break;
+      for (int i = 0; i < 12; i++) {            // 4*3 = worst-case diagonal
+          if (any(lessThan(voxel, ivec3(0))) || any(greaterThan(voxel, ivec3(3))))
+              break;
 
-        float v = sample_voxel(voxel);
-        if (v > 0.001) {
-            // Simple diffuse shading from the march step
-            vec3 color = vec3(0.3, 0.75, 0.35);
-            FragColor = vec4(color, 1.0);
-            return;
-        }
+          if (sample_voxel(voxel) > 0.001) {
+              int parity = (voxel.x + voxel.y + voxel.z) & 1;
+              vec3 color = (parity == 0) ? vec3(0.9, 0.85, 0.5) : vec3(0.3, 0.55, 0.85);
+              FragColor = vec4(color, 1.0);
+              return;
+          }
 
-        pos += rayDir * 0.4;
-    }
+          // Advance along the axis with smallest tMax
+          if (tMax.x < tMax.y && tMax.x < tMax.z) {
+              voxel.x += stepDir.x;  tMax.x += tDelta.x;
+          } else if (tMax.y < tMax.z) {
+              voxel.y += stepDir.y;  tMax.y += tDelta.y;
+          } else {
+              voxel.z += stepDir.z;  tMax.z += tDelta.z;
+          }
+      }
 
-    discard;
-}
-"#;
+      discard;
+  }"#;
 
 // ---------- GL helpers ----------
 
@@ -334,8 +344,8 @@ impl Octree {
 fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
-
-    let field_size = 20;
+    
+    let field_size = 35;
 
     for i in (-field_size..field_size).step_by(10) {
         for j in (-field_size..field_size).step_by(10) {
@@ -530,7 +540,9 @@ fn main() {
                 }
             }
             upload_chunk(tex, layer, &chunk);
-            instances.push(VoxelInstanceData {atlas_layer: layer, chunk_pos: [center.x, center.y, center.z]});
+            // iChunkPos must be the min corner so the cube [pos, pos+4] matches
+            // the voxel data range [center-2, center+2].
+            instances.push(VoxelInstanceData {atlas_layer: layer, chunk_pos: [center.x - 2.0, center.y - 2.0, center.z - 2.0]});
             layer = layer + 1;
             
             println!("{} {}", center, size);
@@ -716,7 +728,7 @@ fn main() {
             yaw.cos() * pitch.cos(),
         ).normalize();
         let up = Vec3::new(0.0, 1.0, 0.0);
-        let right = up.cross(dir).normalize();
+        let right = dir.cross(up).normalize();
 
         // WASD movement
         if key_w {

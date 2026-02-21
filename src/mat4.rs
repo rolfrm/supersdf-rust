@@ -14,8 +14,8 @@ pub fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
 }
 
 pub fn view(eye: Vec3, dir: Vec3, world_up: Vec3) -> Mat4 {
-    let right = world_up.cross(dir).normalize();
-    let up = dir.cross(right);
+    let right = dir.cross(world_up).normalize();
+    let up = right.cross(dir);
     let tx = right.dot(eye);
     let ty = up.dot(eye);
     let tz = dir.dot(eye);
