@@ -19,7 +19,7 @@ pub fn compile_sdf_shader(sdf: &DistanceFieldEnum) -> String {
     let param_count = ctx.param_count;
 
     let params_decl = if param_count > 0 {
-        format!("uniform float u_params[{}];\n", param_count)
+        format!("uniform float u_params[{}];\nfloat P(int i) {{ return u_params[i]; }}\n", param_count)
     } else {
         String::new()
     };
@@ -143,7 +143,7 @@ impl CompilerCtx {
     fn param(&mut self) -> String {
         let idx = self.param_count;
         self.param_count += 1;
-        format!("u_params[{}]", idx)
+        format!("P({})", idx)
     }
 
     /// Consume n params at once, return the starting index.
@@ -169,7 +169,7 @@ impl CompilerCtx {
             self.helpers.push_str(
                 r#"
 float sphere_dist(vec3 p, int i) {
-    return length(p - vec3(u_params[i], u_params[i+1], u_params[i+2])) - u_params[i+3];
+    return length(p - vec3(P(i), P(i+1), P(i+2))) - P(i+3);
 }
 
 "#,
@@ -183,7 +183,7 @@ float sphere_dist(vec3 p, int i) {
             self.helpers.push_str(
                 r#"
 float aabb_dist(vec3 p, int i) {
-    vec3 d = abs(p - vec3(u_params[i], u_params[i+1], u_params[i+2])) - vec3(u_params[i+3], u_params[i+4], u_params[i+5]);
+    vec3 d = abs(p - vec3(P(i), P(i+1), P(i+2))) - vec3(P(i+3), P(i+4), P(i+5));
     return length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);
 }
 "#,
@@ -197,7 +197,7 @@ float aabb_dist(vec3 p, int i) {
             self.helpers.push_str(
                 r#"
 vec3 param3(int i) {
-    return vec3(u_params[i], u_params[i+1], u_params[i+2]);
+    return vec3(P(i), P(i+1), P(i+2));
 }
 "#,
             );
@@ -267,8 +267,8 @@ float fbm_noise(vec3 p, float seed) {
             self.helpers.push_str(
                 r#"
 float sphere_ray_intersect(vec3 ro, vec3 rd, int i) {
-    vec3 oc = ro - vec3(u_params[i], u_params[i+1], u_params[i+2]);
-    float r = u_params[i+3];
+    vec3 oc = ro - vec3(P(i), P(i+1), P(i+2));
+    float r = P(i+3);
     float b = dot(oc, rd);
     float c = dot(oc, oc) - r * r;
     float disc = b * b - c;
@@ -340,7 +340,7 @@ float sphere_ray_intersect(vec3 ro, vec3 rd, int i) {
                     "    float _bd{id} = sphere_dist(p, {bidx});\n"
                 ));
                 lines.push_str(&format!("    float _da{id};\n"));
-                lines.push_str(&format!("    if (_bd{id} > u_params[{r}]) {{\n", r = bidx + 3));
+                lines.push_str(&format!("    if (_bd{id} > P({r})) {{\n", r = bidx + 3));
                 lines.push_str(&format!("        _da{id} = _bd{id};\n"));
                 lines.push_str("        g_closest_type = -1;\n");
                 lines.push_str("        g_second_d = 1.0e10;\n");
@@ -466,7 +466,7 @@ float sphere_ray_intersect(vec3 ro, vec3 rd, int i) {
                     let id = self.fresh_id();
                     let idx = self.params(7);
                     lines.push_str(&format!(
-                        "    float _nv{id} = fbm_noise(p, u_params[{}]);\n", idx
+                        "    float _nv{id} = fbm_noise(p, P({}));\n", idx
                     ));
                     format!(
                         "mix(param3({}), param3({}), _nv{id})",
@@ -524,19 +524,18 @@ float sphere_ray_intersect(vec3 ro, vec3 rd, int i) {
 pub struct CompiledBlockShader {
     pub source: String,
     pub param_count: usize,
+    /// vec4s per instance in the UBO: 2 (render_min, render_max) + ceil(param_count/4)
+    pub stride: usize,
 }
 
-/// Compiles a `DistanceFieldEnum` tree into a GLSL fragment shader for a single
-/// grid block. The shader receives `v_world_pos` from the vertex shader (rasterized
-/// cube face), does ray-AABB intersection, marches the simplified SDF within
-/// the AABB, writes `gl_FragDepth` on hit, and `discard`s on miss.
+/// Compiles a `DistanceFieldEnum` tree into a GLSL fragment shader for instanced
+/// block rendering. The shader reads per-instance data (render bounds, params) from
+/// a UBO indexed by `v_data_base` (set from `gl_InstanceID` in the vertex shader).
 ///
 /// Uniforms:
 ///   - `u_camera_pos`: camera world position
-///   - `u_block_min`: AABB minimum corner
-///   - `u_block_max`: AABB maximum corner
 ///   - `u_vp`: combined view-projection matrix (for depth output)
-///   - `u_params[N]`: parameterized SDF constants
+///   - `InstanceData` UBO: vec4 array containing per-instance render bounds + params
 pub fn compile_block_sdf_shader(sdf: &DistanceFieldEnum) -> CompiledBlockShader {
     let mut ctx = CompilerCtx::new();
     let dist_body = ctx.compile_distance(sdf);
@@ -545,9 +544,10 @@ pub fn compile_block_sdf_shader(sdf: &DistanceFieldEnum) -> CompiledBlockShader 
 
     let helpers = &ctx.helpers;
     let param_count = ctx.param_count;
+    let stride = 2 + (param_count + 3) / 4;
 
     let params_decl = if param_count > 0 {
-        format!("uniform float u_params[{}];\n", param_count)
+        "flat in int v_data_base;\nlayout(std140) uniform InstanceData {\n    vec4 u_data[4096];\n};\nfloat P(int i) { return u_data[v_data_base + 2 + i/4][i & 3]; }\n".to_string()
     } else {
         String::new()
     };
@@ -556,11 +556,11 @@ pub fn compile_block_sdf_shader(sdf: &DistanceFieldEnum) -> CompiledBlockShader 
         r#"#version 330 core
 
 in vec3 v_world_pos;
+flat in vec3 v_block_min;
+flat in vec3 v_block_max;
 out vec4 FragColor;
 
 uniform vec3 u_camera_pos;
-uniform vec3 u_block_min;
-uniform vec3 u_block_max;
 uniform mat4 u_vp;
 {params_decl}
 {helpers}
@@ -591,8 +591,8 @@ void main() {{
     vec3 rd = normalize(v_world_pos - ro);
 
     // Ray-AABB intersection
-    vec3 t1 = (u_block_min - ro) / rd;
-    vec3 t2 = (u_block_max - ro) / rd;
+    vec3 t1 = (v_block_min - ro) / rd;
+    vec3 t2 = (v_block_max - ro) / rd;
     vec3 tmin_v = min(t1, t2);
     vec3 tmax_v = max(t1, t2);
     float t_enter = max(max(tmin_v.x, tmin_v.y), tmin_v.z);
@@ -625,7 +625,7 @@ void main() {{
                 continue;
             }}
         }}
-    
+
         t += d;
         if (t > t_exit) break;
     }}
@@ -647,13 +647,13 @@ void main() {{
     //FragColor= vec4(iterations, iterations, iterations, 1.0);
     // Write depth from hit point
     vec4 clip = u_vp * vec4(p, 1.0);
-    
+
     gl_FragDepth = (clip.z / clip.w) * 0.5 + 0.5;
 }}
 "#
     );
 
-    CompiledBlockShader { source, param_count }
+    CompiledBlockShader { source, param_count, stride }
 }
 
 /// Collect all parameter values from an SDF tree in the same order as the
@@ -831,11 +831,14 @@ mod tests {
         let sdf: DistanceFieldEnum =
             Sphere::new(Vec3::new(1.0, 2.0, 3.0), 4.0).color(Color::RED);
         let compiled = compile_block_sdf_shader(&sdf);
-        assert!(compiled.source.contains("u_params["));
+        assert!(compiled.source.contains("InstanceData"));
+        assert!(compiled.source.contains("u_data"));
+        assert!(compiled.source.contains("P("));
         assert!(compiled.param_count > 0);
+        assert!(compiled.stride >= 2);
         // Should not contain literal values for the sphere
         assert!(!compiled.source.contains("1.0, 2.0, 3.0"));
-        println!("param_count = {}", compiled.param_count);
+        println!("param_count = {}, stride = {}", compiled.param_count, compiled.stride);
         println!("{}", compiled.source);
     }
 

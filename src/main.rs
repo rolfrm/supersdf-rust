@@ -1,12 +1,14 @@
 extern crate gl;
 extern crate glfw;
+mod octree2;
 
 use supersdf::color::*;
 use supersdf::sdf::*;
 use supersdf::sdf_compiler;
 use supersdf::vec3::Vec3;
-use supersdf::mat4::{self, Mat4, Frustum};
-use supersdf::octree::{self, OctreeNode, ROOT_SIZE};
+use supersdf::mat4::{self, Frustum};
+use supersdf::octree::{OctreeNode, ROOT_SIZE};
+use octree2::{OctreeNode as OctreeNode2, build_octree};
 
 use gl::types::*;
 use glfw::{Action, Context, Key, MouseButton};
@@ -15,10 +17,40 @@ use std::ffi::CString;
 use std::ptr;
 use std::rc::Rc;
 use std::str;
+use std::time::Instant;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
-// ---------- Block vertex shader ----------
-const BLOCK_VERTEX_SHADER_SRC: &str = r#"
+// ---------- Block vertex shader (instanced, UBO) ----------
+fn block_vertex_shader_src(stride: usize) -> String {
+    format!(
+        r#"#version 330 core
+layout (location = 0) in vec3 aPos;
+uniform mat4 u_vp;
+layout(std140) uniform InstanceData {{
+    vec4 u_data[4096];
+}};
+out vec3 v_world_pos;
+flat out vec3 v_block_min;
+flat out vec3 v_block_max;
+flat out int v_data_base;
+void main() {{
+    int base = gl_InstanceID * {stride};
+    vec3 render_min = u_data[base].xyz;
+    vec3 render_max = u_data[base + 1].xyz;
+    vec3 world = render_min + aPos * (render_max - render_min);
+    v_world_pos = world;
+    v_block_min = render_min;
+    v_block_max = render_max;
+    v_data_base = base;
+    gl_Position = u_vp * vec4(world, 1.0);
+}}
+"#
+    )
+}
+
+
+// ---------- Debug box vertex shader (non-instanced) ----------
+const DEBUG_VERTEX_SHADER_SRC: &str = r#"
 #version 330 core
 layout (location = 0) in vec3 aPos;
 uniform mat4 u_model;
@@ -38,6 +70,84 @@ uniform vec3 u_color;
 out vec4 FragColor;
 void main() {
     FragColor = vec4(u_color, 0.12);
+}
+"#;
+
+const VOXEL_VERTEX_SHADER_SRC: &str = r#"
+#version 330 core
+
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 iChunkPos;
+layout (location = 2) in uint iAtlasLayer;
+
+out vec3 vLocalPos;
+out vec3 vWorldPos;
+flat out vec3 vChunkOrigin;
+flat out uint vAtlasLayer;
+
+uniform mat4 uViewProj;
+
+void main()
+{
+    vLocalPos    = aPos;
+    vAtlasLayer  = iAtlasLayer;
+    vChunkOrigin = iChunkPos;
+
+    vec3 worldPos = iChunkPos + aPos * 4.0;
+    vWorldPos     = worldPos;
+    gl_Position   = uViewProj * vec4(worldPos, 1.0);
+}
+"#;
+const VOXEL_FRAGMENT_SHADER_SRC: &str = r#"
+#version 330 core
+
+in  vec3 vLocalPos;      // [0,1]^3 on the cube face
+in  vec3 vWorldPos;      // world-space position of this fragment
+flat in vec3 vChunkOrigin; // world-space min corner of this chunk
+flat in uint vAtlasLayer;
+
+// GL_TEXTURE_2D_ARRAY: 16×4×N. Layout: col = x + z*4, row = y, layer = brick index.
+uniform sampler2DArray uBrickAtlas;
+uniform vec3           uCameraPos;
+
+out vec4 FragColor;
+
+float sample_voxel(ivec3 p)
+{
+    return texelFetch(
+        uBrickAtlas,
+        ivec3(p.x + p.z * 4, p.y, int(vAtlasLayer)),
+        0
+    ).r;
+}
+
+void main()
+{
+    // Ray from camera through this fragment (world space = voxel space, 1 unit = 1 voxel)
+    vec3 rayDir = normalize(vWorldPos - uCameraPos);
+
+    // Entry point in voxel space [0..4).
+    // Clamp away from exact face boundaries to avoid immediate out-of-bounds.
+    vec3 pos = clamp(vLocalPos * 4.0, vec3(0.001), vec3(3.999));
+
+    // March through the 4^3 grid; step 0.4 voxel units, 20 steps covers the diagonal
+    for (int i = 0; i < 20; i++) {
+        ivec3 voxel = ivec3(floor(pos));
+        if (any(lessThan(voxel, ivec3(0))) || any(greaterThan(voxel, ivec3(3))))
+            break;
+
+        float v = sample_voxel(voxel);
+        if (v > 0.001) {
+            // Simple diffuse shading from the march step
+            vec3 color = vec3(0.3, 0.75, 0.35);
+            FragColor = vec4(color, 1.0);
+            return;
+        }
+
+        pos += rayDir * 0.4;
+    }
+
+    discard;
 }
 "#;
 
@@ -100,15 +210,19 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
 struct BlockProgram {
     id: GLuint,
     u_vp: GLint,
-    u_model: GLint,
     u_camera_pos: GLint,
-    u_block_min: GLint,
-    u_block_max: GLint,
-    u_params: GLint,
+    /// vec4s per instance in the UBO
+    stride: usize,
+    /// max instances per draw call (4096 / stride)
+    max_instances: usize,
 }
 
-fn build_block_program(frag_src: &str) -> Option<BlockProgram> {
-    let vs = compile_gl_shader(BLOCK_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
+fn build_block_program(frag_src: &str, param_count: usize) -> Option<BlockProgram> {
+    let stride = 2 + (param_count + 3) / 4;
+    let max_instances = 4096 / stride;
+    let vs_src = block_vertex_shader_src(stride);
+
+    let vs = compile_gl_shader(&vs_src, gl::VERTEX_SHADER);
     if vs == 0 { return None; }
 
     let fs = compile_gl_shader(frag_src, gl::FRAGMENT_SHADER);
@@ -121,14 +235,19 @@ fn build_block_program(frag_src: &str) -> Option<BlockProgram> {
     if id == 0 { return None; }
 
     unsafe {
+        // Bind the InstanceData UBO to binding point 0
+        let block_name = CString::new("InstanceData").unwrap();
+        let ubo_idx = gl::GetUniformBlockIndex(id, block_name.as_ptr());
+        if ubo_idx != gl::INVALID_INDEX {
+            gl::UniformBlockBinding(id, ubo_idx, 0);
+        }
+
         Some(BlockProgram {
             id,
             u_vp: gl::GetUniformLocation(id, CString::new("u_vp").unwrap().as_ptr()),
-            u_model: gl::GetUniformLocation(id, CString::new("u_model").unwrap().as_ptr()),
             u_camera_pos: gl::GetUniformLocation(id, CString::new("u_camera_pos").unwrap().as_ptr()),
-            u_block_min: gl::GetUniformLocation(id, CString::new("u_block_min").unwrap().as_ptr()),
-            u_block_max: gl::GetUniformLocation(id, CString::new("u_block_max").unwrap().as_ptr()),
-            u_params: gl::GetUniformLocation(id, CString::new("u_params").unwrap().as_ptr()),
+            stride,
+            max_instances,
         })
     }
 }
@@ -183,7 +302,7 @@ impl Octree {
                 already_cached += 1;
             } else {
                 let compiled_shader = sdf_compiler::compile_block_sdf_shader(optimized);
-                match build_block_program(&compiled_shader.source) {
+                match build_block_program(&compiled_shader.source, compiled_shader.param_count) {
                     Some(prog) => {
                         self.programs.insert(*hash, prog);
                         compiled += 1;
@@ -216,7 +335,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
 
-    let field_size = 200;
+    let field_size = 20;
 
     for i in (-field_size..field_size).step_by(10) {
         for j in (-field_size..field_size).step_by(10) {
@@ -236,10 +355,47 @@ fn build_initial_scene() -> DistanceFieldEnum {
     sdf.optimize_bounds()
 }
 
+#[repr(C)]
+pub struct VoxelChunk {
+    // 4x4x4 = 64 voxels
+    pub voxels: [u8; 64],
+}
+
+#[repr(C)]
+pub struct VoxelInstanceData {
+    pub chunk_pos: [f32; 3],   // world position
+    pub atlas_layer: u32,      // brick index
+}
+
+unsafe fn upload_chunk(tex: u32, layer: u32, chunk: &VoxelChunk) {
+    // Repack 4×4×4 (z-major) into 16×4 (row=y, col=x+z*4) for a 2D array layer.
+    // Source layout: voxels[z*16 + y*4 + x]
+    let mut buf = [0u8; 64];
+    for z in 0..4usize {
+        for y in 0..4usize {
+            for x in 0..4usize {
+                buf[y * 16 + (x + z * 4)] = chunk.voxels[z * 16 + y * 4 + x];
+            }
+        }
+    }
+
+    gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
+    gl::TexSubImage3D(
+        gl::TEXTURE_2D_ARRAY,
+        0,
+        0, 0, layer as i32, // x_off, y_off, layer index
+        16, 4, 1,           // width=16, height=4, one layer
+        gl::RED,
+        gl::UNSIGNED_BYTE,
+        buf.as_ptr() as *const _,
+    );
+}
+
 fn main() {
     let mut sdf = build_initial_scene();
     let mut sdf_dirty = true;
     let mut sphere_count: u32 = 0;
+
 
     // Init GLFW
     let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
@@ -304,11 +460,17 @@ fn main() {
         gl::BindVertexArray(0);
     }
 
+    // UBO for instanced rendering (per-instance data: render bounds + params)
+    let mut ubo = 0u32;
+    unsafe {
+        gl::GenBuffers(1, &mut ubo);
+    }
+
     let mut octree = Octree::new();
 
     // Debug box shader for visualizing octree nodes
     let debug_prog = {
-        let vs = compile_gl_shader(BLOCK_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
+        let vs = compile_gl_shader(DEBUG_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
         let fs = compile_gl_shader(DEBUG_BOX_FRAG_SRC, gl::FRAGMENT_SHADER);
         let id = link_program(vs, fs);
         (
@@ -319,6 +481,113 @@ fn main() {
         )
     };
     let mut show_debug_boxes = false;
+
+    let oct2 = build_octree(&sdf, 512.0);
+    println!("Leaves: {}", oct2.count_leaves());
+
+    let mut tex = 0;
+    let mut instances = vec!();
+    unsafe {
+        gl::GenTextures(1, &mut tex);
+        gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
+
+        // Layout: one layer per brick, each layer is 16×4 (col = x + z*4, row = y).
+        // 714 layers is well under GL_MAX_ARRAY_TEXTURE_LAYERS (2048 on macOS).
+        // The old TEXTURE_3D approach put 4*N slices in the Z dim, hitting the 2048 limit.
+        let n_bricks = oct2.count_leaves() as i32;
+        gl::TexStorage3D(
+            gl::TEXTURE_2D_ARRAY,
+            1,
+            gl::R8,
+            16, 4, n_bricks, // width=16, height=4, depth=N layers
+        );
+
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_BASE_LEVEL, 0);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAX_LEVEL, 0);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+    
+    let mut layer = 0 as u32;
+    oct2.for_each_leaf(&mut |l| {
+        if let OctreeNode2::Leaf {center, size, optimized_sdf} = l {
+            let mut chunk = VoxelChunk {
+                voxels: [0; 64],
+            };
+            let mut index = 0;
+            for z in -2..2 {
+                for y in -2..2 {
+                    for x in -2..2 {
+                        let pt = Vec3::new(x as f32, y as f32, z as f32);
+                        let d = optimized_sdf.distance(pt + *center);
+                        println!("   {}", d);
+                        if d < 0.0 {
+                            chunk.voxels[index] = 1;
+                        }
+                        index += 1;
+                    }
+                }
+            }
+            upload_chunk(tex, layer, &chunk);
+            instances.push(VoxelInstanceData {atlas_layer: layer, chunk_pos: [center.x, center.y, center.z]});
+            layer = layer + 1;
+            
+            println!("{} {}", center, size);
+            }
+    });
+        println!("Layers: {}", layer);
+    }
+
+    let voxel_prog = {
+        let vs = compile_gl_shader(VOXEL_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
+        let fs = compile_gl_shader(VOXEL_FRAGMENT_SHADER_SRC, gl::FRAGMENT_SHADER);
+        let id = link_program(vs, fs);
+        (
+            id,
+            unsafe { gl::GetUniformLocation(id, CString::new("uViewProj").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uBrickAtlas").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uCameraPos").unwrap().as_ptr()) },
+        )
+    };
+
+    // Voxel VAO: cube geometry (loc 0) + per-instance chunk data (locs 1, 2)
+    let (mut voxel_vao, mut voxel_instance_vbo) = (0u32, 0u32);
+    unsafe {
+        gl::GenVertexArrays(1, &mut voxel_vao);
+        gl::BindVertexArray(voxel_vao);
+
+        // location 0: unit cube vertex positions (reuse existing vbo)
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+        gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE,
+            (3 * std::mem::size_of::<f32>()) as GLsizei, ptr::null());
+        gl::EnableVertexAttribArray(0);
+
+        // Per-instance data buffer: VoxelInstanceData { chunk_pos: [f32;3], atlas_layer: u32 }
+        gl::GenBuffers(1, &mut voxel_instance_vbo);
+        gl::BindBuffer(gl::ARRAY_BUFFER, voxel_instance_vbo);
+        gl::BufferData(
+            gl::ARRAY_BUFFER,
+            (instances.len() * std::mem::size_of::<VoxelInstanceData>()) as GLsizeiptr,
+            instances.as_ptr() as *const _,
+            gl::STATIC_DRAW,
+        );
+
+        let stride = std::mem::size_of::<VoxelInstanceData>() as GLsizei; // 16 bytes
+
+        // location 1: iChunkPos (vec3, offset 0)
+        gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, stride, ptr::null());
+        gl::EnableVertexAttribArray(1);
+        gl::VertexAttribDivisor(1, 1);
+
+        // location 2: iAtlasLayer (uint, offset 12)
+        gl::VertexAttribIPointer(2, 1, gl::UNSIGNED_INT, stride,
+            (3 * std::mem::size_of::<f32>()) as *const _);
+        gl::EnableVertexAttribArray(2);
+        gl::VertexAttribDivisor(2, 1);
+
+        gl::BindVertexArray(0);
+    }
 
     // Camera state
     let mut cam_pos = Vec3::new(0.0, 0.0, -60.0);
@@ -334,6 +603,15 @@ fn main() {
     let mut key_a = false;
     let mut key_s = false;
     let mut key_d = false;
+
+    // FPS counter
+    let mut fps_last_time = Instant::now();
+    let mut fps_frame_count: u32 = 0;
+
+
+    
+    // Toggle this to switch between SDF path-tracing and voxel rendering
+    let path_tracing_enabled = false;
 
     while !window.should_close() {
         glfw.poll_events();
@@ -395,7 +673,7 @@ fn main() {
                     let cam_up2 = cam_dir.cross(cam_right);
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
-                    if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
+                    if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 10000.0) {
                         sdf = sdf.subtract(DistanceFieldEnum::sphere(hit_pos, 5.0));
                         sdf = sdf.optimize_bounds();
                         sdf_dirty = true;
@@ -472,47 +750,112 @@ fn main() {
 
             gl::BindVertexArray(vao);
 
-            // Frustum culling + front-to-back traversal
-            let frustum = Frustum::from_vp(&vp);
-            let mut leaf_stack: Vec<&OctreeNode> = vec![&octree.root];
-            while let Some(node) = leaf_stack.pop() {
-                match node {
-                    OctreeNode::Empty => {}
-                    OctreeNode::Leaf { center, size, render_min, render_max, topology_hash, params, .. } => {
-                        if frustum.cull_aabb(*center, *size / 2.0) { continue; }
-                        if let Some(prog) = octree.programs.get(topology_hash) {
-                            let block_size = *render_max - *render_min;
-                            let model = mat4::block_model_box(*render_min, block_size);
+            if path_tracing_enabled {
+                // Phase 1: Collect visible leaves, pack UBO data per topology group
+                // Ordered by first-seen (front-to-back traversal), instances within
+                // each group also stay in front-to-back order.
+                let frustum = Frustum::from_vp(&vp);
 
-                            gl::UseProgram(prog.id);
-                            gl::UniformMatrix4fv(prog.u_vp, 1, gl::FALSE, vp.as_ptr());
-                            gl::UniformMatrix4fv(prog.u_model, 1, gl::FALSE, model.as_ptr());
-                            gl::Uniform3f(prog.u_camera_pos, cam_pos.x, cam_pos.y, cam_pos.z);
-                            gl::Uniform3f(prog.u_block_min, render_min.x, render_min.y, render_min.z);
-                            gl::Uniform3f(prog.u_block_max, render_max.x, render_max.y, render_max.z);
+                struct GroupData {
+                    hash: u64,
+                    ubo_data: Vec<f32>,
+                    instance_count: usize,
+                }
+                let mut groups: Vec<GroupData> = Vec::new();
+                let mut group_idx: HashMap<u64, usize> = HashMap::new();
 
-                            if !params.is_empty() {
-                                gl::Uniform1fv(prog.u_params, params.len() as i32, params.as_ptr());
+                let mut leaf_stack: Vec<&OctreeNode> = vec![&octree.root];
+                while let Some(node) = leaf_stack.pop() {
+                    match node {
+                        OctreeNode::Empty => {}
+                        OctreeNode::Leaf { center, size, render_min, render_max, topology_hash, params, .. } => {
+                            if frustum.cull_aabb(*center, *size / 2.0) { continue; }
+                            if let Some(prog) = octree.programs.get(topology_hash) {
+                                let fpi = prog.stride * 4; // floats per instance
+                                let idx = *group_idx.entry(*topology_hash).or_insert_with(|| {
+                                    let i = groups.len();
+                                    groups.push(GroupData {
+                                        hash: *topology_hash,
+                                        ubo_data: Vec::new(),
+                                        instance_count: 0,
+                                    });
+                                    i
+                                });
+                                let group = &mut groups[idx];
+                                let base = group.ubo_data.len();
+                                group.ubo_data.resize(base + fpi, 0.0);
+                                // vec4[0]: render_min
+                                group.ubo_data[base]     = render_min.x;
+                                group.ubo_data[base + 1] = render_min.y;
+                                group.ubo_data[base + 2] = render_min.z;
+                                // vec4[1]: render_max
+                                group.ubo_data[base + 4] = render_max.x;
+                                group.ubo_data[base + 5] = render_max.y;
+                                group.ubo_data[base + 6] = render_max.z;
+                                // vec4[2..]: params packed into vec4s
+                                for (j, &p) in params.iter().enumerate() {
+                                    group.ubo_data[base + 8 + j] = p;
+                                }
+                                group.instance_count += 1;
                             }
-
-                            gl::DrawArrays(gl::TRIANGLES, 0, 36);
                         }
-                    }
-                    OctreeNode::Branch { center: bc, size, children, .. } => {
-                        if frustum.cull_aabb(*bc, *size / 2.0) { continue; }
-                        // Determine nearest octant to camera using sign bits
-                        let near = ((cam_pos.x > bc.x) as usize)
-                            | (((cam_pos.y > bc.y) as usize) << 1)
-                            | (((cam_pos.z > bc.z) as usize) << 2);
-                        // Push farthest first (popcount 3->0) so nearest pops first from stack
-                        for &mask in &[7usize, 6, 5, 3, 4, 2, 1, 0] {
-                            if let Some(ref child) = children[near ^ mask] {
-                                leaf_stack.push(child.as_ref());
+                        OctreeNode::Branch { center: bc, size, children, .. } => {
+                            if frustum.cull_aabb(*bc, *size / 2.0) { continue; }
+                            let near = ((cam_pos.x > bc.x) as usize)
+                                | (((cam_pos.y > bc.y) as usize) << 1)
+                                | (((cam_pos.z > bc.z) as usize) << 2);
+                            for &mask in &[7usize, 6, 5, 3, 4, 2, 1, 0] {
+                                if let Some(ref child) = children[near ^ mask] {
+                                    leaf_stack.push(child.as_ref());
+                                }
                             }
                         }
                     }
                 }
+
+                // Phase 2: Draw groups in first-seen order (front-to-back)
+                gl::BindVertexArray(vao);
+                for group in &groups {
+                    if let Some(prog) = octree.programs.get(&group.hash) {
+                        gl::UseProgram(prog.id);
+                        gl::UniformMatrix4fv(prog.u_vp, 1, gl::FALSE, vp.as_ptr());
+                        gl::Uniform3f(prog.u_camera_pos, cam_pos.x, cam_pos.y, cam_pos.z);
+
+                        let fpi = prog.stride * 4;
+                        for batch_start in (0..group.instance_count).step_by(prog.max_instances) {
+                            let batch_count = (group.instance_count - batch_start).min(prog.max_instances);
+                            let float_offset = batch_start * fpi;
+                            let byte_size = batch_count * fpi * std::mem::size_of::<f32>();
+
+                            gl::BindBuffer(gl::UNIFORM_BUFFER, ubo);
+                            gl::BufferData(
+                                gl::UNIFORM_BUFFER,
+                                byte_size as GLsizeiptr,
+                                group.ubo_data[float_offset..].as_ptr() as *const _,
+                                gl::STATIC_DRAW,
+                            );
+                            gl::BindBufferBase(gl::UNIFORM_BUFFER, 0, ubo);
+
+                            gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, batch_count as GLsizei);
+                        }
+                    }
+                }
+            } // end path_tracing_enabled
+            else{
+            // Voxel rendering pass
+            if !instances.is_empty() {
+                gl::UseProgram(voxel_prog.0);
+                gl::UniformMatrix4fv(voxel_prog.1, 1, gl::FALSE, vp.as_ptr());
+                gl::Uniform1i(voxel_prog.2, 0); // uBrickAtlas -> texture unit 0
+                gl::Uniform3f(voxel_prog.3, cam_pos.x, cam_pos.y, cam_pos.z);
+                gl::ActiveTexture(gl::TEXTURE0);
+                gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
+                gl::BindVertexArray(voxel_vao);
+                gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, instances.len() as GLsizei);
+                gl::BindVertexArray(0);
             }
+                }
+                
 
             // Debug pass: draw translucent boxes for each leaf node
             if show_debug_boxes {
@@ -555,12 +898,27 @@ fn main() {
         }
 
         window.swap_buffers();
+
+        // FPS counter
+        fps_frame_count += 1;
+        let now = Instant::now();
+        let elapsed = now.duration_since(fps_last_time).as_secs_f64();
+        if elapsed >= 1.0 {
+            println!("FPS: {:.1}", fps_frame_count as f64 / elapsed);
+            fps_frame_count = 0;
+            fps_last_time = now;
+        }
     }
 
     octree.cleanup();
     unsafe {
         gl::DeleteProgram(debug_prog.0);
+        gl::DeleteProgram(voxel_prog.0);
         gl::DeleteVertexArrays(1, &vao);
+        gl::DeleteVertexArrays(1, &voxel_vao);
         gl::DeleteBuffers(1, &vbo);
+        gl::DeleteBuffers(1, &ubo);
+        gl::DeleteBuffers(1, &voxel_instance_vbo);
+        gl::DeleteTextures(1, &tex);
     }
 }

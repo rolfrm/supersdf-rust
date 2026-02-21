@@ -503,6 +503,12 @@ impl Into<DistanceFieldEnum> for Subtract {
 
 impl DistanceFieldEnum {
 
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+    
+    
     pub fn topology_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.hash_topology(&mut hasher);
