@@ -350,7 +350,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
     
-    let field_size = 20;
+    let field_size = 2000;
 
     for i in (-field_size..field_size).step_by(10) {
         for j in (-field_size..field_size).step_by(10) {
@@ -513,9 +513,9 @@ fn get_superchunk(node: &octree2::OctreeNode, center: Vec3, size: f32, palette: 
             let mut chunk = None;
             match n {
                 octree2::OctreeNode::Empty => {}
-                octree2::OctreeNode::Leaf { center, size, optimized_sdf } => {
+                octree2::OctreeNode::Leaf { center, size, sdf } => {
                     // reached 4x4x4 block
-                    chunk = voxelize_node(center, *size, optimized_sdf, palette);
+                    chunk = voxelize_node(center, *size, sdf, palette);
                     let half = *size / 2.0;
                     layer.push(VoxelInstanceData{
                         chunk_pos: [center.x - half, center.y - half, center.z - half],
@@ -523,10 +523,10 @@ fn get_superchunk(node: &octree2::OctreeNode, center: Vec3, size: f32, palette: 
                         chunk_size: *size 
                     });
                 }
-                octree2::OctreeNode::Branch { center, size, optimized_sdf, children } => {
+                octree2::OctreeNode::Branch { center, size, sdf, children } => {
                     if false && *size <= MAX_LOD_SIZE {
                         
-                        chunk = voxelize_node(center, *size, optimized_sdf, palette);
+                        chunk = voxelize_node(center, *size, sdf, palette);
                         let half = *size / 2.0;
                         layer.push(VoxelInstanceData{
                             chunk_pos: [center.x - half, center.y - half, center.z - half],
@@ -797,7 +797,7 @@ fn main() {
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 10000.0) {
-                        sdf = sdf.add(DistanceFieldEnum::sphere(hit_pos, 5.0));
+                        sdf = sdf.subtract(DistanceFieldEnum::sphere(hit_pos, 5.0));
                         sdf = sdf.optimize_bounds();
                         sdf_dirty = true;
                         println!("Subtracted sphere at {}", hit_pos);
@@ -981,7 +981,6 @@ fn main() {
                             
                             if frustum.cull_aabb(*center, *size / 2.0) { continue; }
                             panic!("this should never happen!");
-                           // println!("Leaf at {}  {}", center, size);
                         }
                         octree2::OctreeNode::Branch { center, size, children, .. } => {
                             if frustum.cull_aabb(*center, *size / 2.0) { continue; }
@@ -990,7 +989,7 @@ fn main() {
                                 if node_instance_lookup.contains_key(node) == false {
                                     let chunk = get_superchunk(node, *center, *size, &mut palette, vbo);                           
                                     node_instance_lookup.insert(node.clone(), chunk);
-                                    println!("Load chunk");
+                                    
                                 }
                                 to_render.push(node);
          

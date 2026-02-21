@@ -12,12 +12,12 @@ pub enum OctreeNode {
     Leaf {
         center: Vec3,
         size: f32,
-        optimized_sdf: Rc<DistanceFieldEnum>,
+        sdf: Rc<DistanceFieldEnum>,
     },
     Branch {
         center: Vec3,
         size: f32,
-        optimized_sdf: Rc<DistanceFieldEnum>,
+        sdf: Rc<DistanceFieldEnum>,
         children: [Option<Rc<OctreeNode>>; 8],
     },
     Empty,
@@ -73,9 +73,9 @@ impl OctreeNode {
         }
 
         match old_node {
-            OctreeNode::Leaf { optimized_sdf, .. }
-            | OctreeNode::Branch { optimized_sdf, .. }
-                if optimized.equals(optimized_sdf) =>
+            OctreeNode::Leaf { sdf, .. }
+            | OctreeNode::Branch { sdf, .. }
+                if optimized.equals(sdf) =>
             {
                 // Collect all hashes from the reused subtree so we don't delete their programs
                 *reused_count += 1;
@@ -94,7 +94,7 @@ impl OctreeNode {
             return OctreeNode::Leaf {
                 center,
                 size,
-                optimized_sdf: optimized
+                sdf: optimized
             };
         }
 
@@ -135,7 +135,7 @@ impl OctreeNode {
         OctreeNode::Branch {
             center,
             size,
-            optimized_sdf: optimized,
+            sdf: optimized,
             children,
         }
     }
@@ -221,16 +221,18 @@ impl PartialEq for OctreeNode {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
-                OctreeNode::Leaf { center: c1, size: s1, .. },
-                OctreeNode::Leaf { center: c2, size: s2, .. },
-            ) => c1.x.to_bits() == c2.x.to_bits()
+                OctreeNode::Leaf { center: c1, size: s1, sdf: sdf1 },
+                OctreeNode::Leaf { center: c2, size: s2, sdf: sdf2 },
+                ) => sdf1 == sdf2 &&
+                c1.x.to_bits() == c2.x.to_bits()
                 && c1.y.to_bits() == c2.y.to_bits()
                 && c1.z.to_bits() == c2.z.to_bits()
                 && s1.to_bits() == s2.to_bits(),
             (
-                OctreeNode::Branch { center: c1, size: s1, .. },
-                OctreeNode::Branch { center: c2, size: s2, .. },
-            ) => c1.x.to_bits() == c2.x.to_bits()
+                OctreeNode::Branch { center: c1, size: s1, sdf: sdf1, .. },
+                OctreeNode::Branch { center: c2, size: s2, sdf: sdf2, .. },
+                ) => sdf1 == sdf2 &&
+                c1.x.to_bits() == c2.x.to_bits()
                 && c1.y.to_bits() == c2.y.to_bits()
                 && c1.z.to_bits() == c2.z.to_bits()
                 && s1.to_bits() == s2.to_bits(),
