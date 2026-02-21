@@ -72,7 +72,18 @@ impl OctreeNode {
             return OctreeNode::Empty;
         }
 
-        let prim_count = optimized.count_primitives_up_to(6);
+        match old_node {
+            OctreeNode::Leaf { optimized_sdf, .. }
+            | OctreeNode::Branch { optimized_sdf, .. }
+                if optimized.equals(optimized_sdf) =>
+            {
+                // Collect all hashes from the reused subtree so we don't delete their programs
+                *reused_count += 1;
+                return old_node.clone();
+            }
+            _ => {}
+        }
+
 
         // Leaf condition: stop subdividing at min size or <=6 primitives
         if size <= MIN_NODE_SIZE {
