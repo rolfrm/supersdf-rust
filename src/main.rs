@@ -7,7 +7,6 @@ use supersdf::sdf::*;
 use supersdf::sdf_compiler;
 use supersdf::vec3::Vec3;
 use supersdf::mat4::{self, Frustum};
-use supersdf::octree::{OctreeNode, ROOT_SIZE};
 use octree2::{build_octree, OctreeNode as OctreeNode2};
 
 use gl::types::*;
@@ -20,59 +19,6 @@ use std::rc::Rc;
 use std::str;
 use std::time::Instant;
 use rand::{Rng, SeedableRng, rngs::StdRng};
-
-// ---------- Block vertex shader (instanced, UBO) ----------
-fn block_vertex_shader_src(stride: usize) -> String {
-    format!(
-        r#"#version 330 core
-layout (location = 0) in vec3 aPos;
-uniform mat4 u_vp;
-layout(std140) uniform InstanceData {{
-    vec4 u_data[4096];
-}};
-out vec3 v_world_pos;
-flat out vec3 v_block_min;
-flat out vec3 v_block_max;
-flat out int v_data_base;
-void main() {{
-    int base = gl_InstanceID * {stride};
-    vec3 render_min = u_data[base].xyz;
-    vec3 render_max = u_data[base + 1].xyz;
-    vec3 world = render_min + aPos * (render_max - render_min);
-    v_world_pos = world;
-    v_block_min = render_min;
-    v_block_max = render_max;
-    v_data_base = base;
-    gl_Position = u_vp * vec4(world, 1.0);
-}}
-"#
-    )
-}
-
-
-// ---------- Debug box vertex shader (non-instanced) ----------
-const DEBUG_VERTEX_SHADER_SRC: &str = r#"
-#version 330 core
-layout (location = 0) in vec3 aPos;
-uniform mat4 u_model;
-uniform mat4 u_vp;
-out vec3 v_world_pos;
-void main() {
-    vec4 world = u_model * vec4(aPos, 1.0);
-    v_world_pos = world.xyz;
-    gl_Position = u_vp * world;
-}
-"#;
-
-// ---------- Debug box shader (flat color, alpha) ----------
-const DEBUG_BOX_FRAG_SRC: &str = r#"
-#version 330 core
-uniform vec3 u_color;
-out vec4 FragColor;
-void main() {
-    FragColor = vec4(u_color, 0.12);
-}
-"#;
 
 const VOXEL_VERTEX_SHADER_SRC: &str = r#"
 #version 330 core
@@ -220,130 +166,6 @@ fn link_program(vs: GLuint, fs: GLuint) -> GLuint {
     }
 }
 
-// ---------- Block program ----------
-
-struct BlockProgram {
-    id: GLuint,
-    u_vp: GLint,
-    u_camera_pos: GLint,
-    /// vec4s per instance in the UBO
-    stride: usize,
-    /// max instances per draw call (4096 / stride)
-    max_instances: usize,
-}
-
-fn build_block_program(frag_src: &str, param_count: usize) -> Option<BlockProgram> {
-    let stride = 2 + (param_count + 3) / 4;
-    let max_instances = 4096 / stride;
-    let vs_src = block_vertex_shader_src(stride);
-
-    let vs = compile_gl_shader(&vs_src, gl::VERTEX_SHADER);
-    if vs == 0 { return None; }
-
-    let fs = compile_gl_shader(frag_src, gl::FRAGMENT_SHADER);
-    if fs == 0 {
-        unsafe { gl::DeleteShader(vs); }
-        return None;
-    }
-
-    let id = link_program(vs, fs);
-    if id == 0 { return None; }
-
-    unsafe {
-        // Bind the InstanceData UBO to binding point 0
-        let block_name = CString::new("InstanceData").unwrap();
-        let ubo_idx = gl::GetUniformBlockIndex(id, block_name.as_ptr());
-        if ubo_idx != gl::INVALID_INDEX {
-            gl::UniformBlockBinding(id, ubo_idx, 0);
-        }
-
-        Some(BlockProgram {
-            id,
-            u_vp: gl::GetUniformLocation(id, CString::new("u_vp").unwrap().as_ptr()),
-            u_camera_pos: gl::GetUniformLocation(id, CString::new("u_camera_pos").unwrap().as_ptr()),
-            stride,
-            max_instances,
-        })
-    }
-}
-
-// ---------- GL Octree wrapper ----------
-
-struct Octree {
-    root: OctreeNode,
-    programs: HashMap<u64, BlockProgram>,
-}
-
-impl Octree {
-    fn new() -> Octree {
-        Octree {
-            root: OctreeNode::Empty,
-            programs: HashMap::new(),
-        }
-    }
-
-    fn rebuild(&mut self, sdf: &DistanceFieldEnum) {
-        let mut cache = HashSet::new();
-        let mut to_compile: HashMap<u64, Rc<DistanceFieldEnum>> = HashMap::new();
-        let mut reused_count = 0u32;
-
-        let root_center = Vec3::new(0.0, 0.0, 0.0);
-        let new_root = OctreeNode::build_node(
-            root_center,
-            ROOT_SIZE,
-            sdf,
-            &self.root,
-            &mut cache,
-            &mut to_compile,
-            &mut reused_count,
-        );
-
-        // Delete programs no longer needed
-        let needed: HashSet<u64> = to_compile.keys().copied().collect();
-        self.programs.retain(|hash, prog| {
-            if needed.contains(hash) {
-                true
-            } else {
-                unsafe { gl::DeleteProgram(prog.id); }
-                false
-            }
-        });
-
-        // Compile only new unique programs
-        let mut compiled = 0u32;
-        let mut already_cached = 0u32;
-        for (hash, optimized) in &to_compile {
-            if self.programs.contains_key(hash) {
-                already_cached += 1;
-            } else {
-                let compiled_shader = sdf_compiler::compile_block_sdf_shader(optimized);
-                match build_block_program(&compiled_shader.source, compiled_shader.param_count) {
-                    Some(prog) => {
-                        self.programs.insert(*hash, prog);
-                        compiled += 1;
-                    }
-                    None => {
-                        eprintln!("Failed to compile shader (hash {})", hash);
-                    }
-                }
-            }
-        }
-
-        self.root = new_root;
-        let leaf_count = OctreeNode::count_leaves(&self.root);
-        println!(
-            "Octree rebuild: {} leaves, {} unique ({} compiled, {} cached), {} subtrees reused",
-            leaf_count, to_compile.len(), compiled, already_cached, reused_count
-        );
-    }
-
-    fn cleanup(&mut self) {
-        for (_, prog) in self.programs.drain() {
-            unsafe { gl::DeleteProgram(prog.id); }
-        }
-    }
-}
-
 fn calculate_lod(distance: f32, max_distance: f32, num_lods: u32) -> u32 {
     let ratio = (distance / max_distance).clamp(0.0, 1.0);
     let lod = (ratio * num_lods as f32) as u32;
@@ -357,7 +179,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
     
-    let field_size = 2000;
+    let field_size = 4000;
 
     for i in (-field_size..field_size).step_by(10) {
         for j in (-field_size..field_size).step_by(10) {
@@ -429,12 +251,6 @@ impl Palette {
     }
 }
 
-fn hash_sdf(sdf: &DistanceFieldEnum) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    sdf.hash(&mut hasher);
-    hasher.finish()
-}
-
 /// Voxelize an octree node (leaf or branch) at 4x4x4 resolution.
 /// Voxel values are palette indices (0=air, 1-255=color).
 fn voxelize_node(center: &Vec3, size: f32, sdf: &DistanceFieldEnum, palette: &mut Palette) -> Option<VoxelChunk> {
@@ -502,7 +318,7 @@ fn get_superchunk(node: &octree2::OctreeNode, center: Vec3, size: f32, palette: 
     unsafe {
         gl::GenTextures(1, &mut tex);
         gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
-        gl::TexStorage3D(gl::TEXTURE_2D_ARRAY, 1, gl::R8, 16, 4, 1024* 2);
+        gl::TexStorage3D(gl::TEXTURE_2D_ARRAY, 1, gl::R8, 16, 4, 1024);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_BASE_LEVEL, 0);
@@ -579,7 +395,7 @@ fn get_superchunk(node: &octree2::OctreeNode, center: Vec3, size: f32, palette: 
             layer.as_ptr() as *const _,
             gl::DYNAMIC_DRAW,
             );
-        
+        println!("Layer len: {}", layer.len());
         let stride = std::mem::size_of::<VoxelInstanceData>() as GLsizei;
         
         gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, stride, ptr::null());
@@ -675,28 +491,6 @@ fn main() {
         gl::BindVertexArray(0);
     }
 
-    // UBO for instanced rendering (per-instance data: render bounds + params)
-    let mut ubo = 0u32;
-    unsafe {
-        gl::GenBuffers(1, &mut ubo);
-    }
-
-    let mut octree = Octree::new();
-
-    // Debug box shader for visualizing octree nodes
-    let debug_prog = {
-        let vs = compile_gl_shader(DEBUG_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
-        let fs = compile_gl_shader(DEBUG_BOX_FRAG_SRC, gl::FRAGMENT_SHADER);
-        let id = link_program(vs, fs);
-        (
-            id,
-            unsafe { gl::GetUniformLocation(id, CString::new("u_vp").unwrap().as_ptr()) },
-            unsafe { gl::GetUniformLocation(id, CString::new("u_model").unwrap().as_ptr()) },
-            unsafe { gl::GetUniformLocation(id, CString::new("u_color").unwrap().as_ptr()) },
-        )
-    };
-    let mut show_debug_boxes = false;
-
     let mut palette = Palette::new();
     let mut palette_tex: GLuint = 0;
     unsafe {
@@ -742,8 +536,6 @@ fn main() {
 
     
     // Toggle this to switch between SDF path-tracing and voxel rendering
-    let path_tracing_enabled = false;
-
     while !window.should_close() {
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
@@ -775,8 +567,7 @@ fn main() {
                             println!("Reset scene");
                         }
                         Key::B if pressed => {
-                            show_debug_boxes = !show_debug_boxes;
-                            println!("Debug boxes: {}", if show_debug_boxes { "ON" } else { "OFF" });
+                            
                         }
                         _ => {}
                     }
@@ -836,10 +627,9 @@ fn main() {
         // Rebuild voxel map if SDF changed
         if sdf_dirty {
             sdf_dirty = false;
-            //octree.rebuild(&sdf);
             let mut cache = HashSet::new();
             let mut reused_count = 0u32;
-            octree2 = OctreeNode2::build_node(Vec3::ZERO, 2048.0, &sdf, &octree2, &mut cache, &mut reused_count);
+            octree2 = OctreeNode2::build_node(Vec3::ZERO, 2048.0 * 4.0, &sdf, &octree2, &mut cache, &mut reused_count);
         
         }
 
@@ -883,99 +673,6 @@ fn main() {
             gl::Enable(gl::CULL_FACE);
 
             gl::BindVertexArray(vao);
-
-            if path_tracing_enabled {
-                // Phase 1: Collect visible leaves, pack UBO data per topology group
-                // Ordered by first-seen (front-to-back traversal), instances within
-                // each group also stay in front-to-back order.
-                let frustum = Frustum::from_vp(&vp);
-
-                struct GroupData {
-                    hash: u64,
-                    ubo_data: Vec<f32>,
-                    instance_count: usize,
-                }
-                let mut groups: Vec<GroupData> = Vec::new();
-                let mut group_idx: HashMap<u64, usize> = HashMap::new();
-
-                let mut leaf_stack: Vec<&OctreeNode> = vec![&octree.root];
-                while let Some(node) = leaf_stack.pop() {
-                    match node {
-                        OctreeNode::Empty => {}
-                        OctreeNode::Leaf { center, size, render_min, render_max, topology_hash, params, .. } => {
-                            if frustum.cull_aabb(*center, *size / 2.0) { continue; }
-                            if let Some(prog) = octree.programs.get(topology_hash) {
-                                let fpi = prog.stride * 4; // floats per instance
-                                let idx = *group_idx.entry(*topology_hash).or_insert_with(|| {
-                                    let i = groups.len();
-                                    groups.push(GroupData {
-                                        hash: *topology_hash,
-                                        ubo_data: Vec::new(),
-                                        instance_count: 0,
-                                    });
-                                    i
-                                });
-                                let group = &mut groups[idx];
-                                let base = group.ubo_data.len();
-                                group.ubo_data.resize(base + fpi, 0.0);
-                                // vec4[0]: render_min
-                                group.ubo_data[base]     = render_min.x;
-                                group.ubo_data[base + 1] = render_min.y;
-                                group.ubo_data[base + 2] = render_min.z;
-                                // vec4[1]: render_max
-                                group.ubo_data[base + 4] = render_max.x;
-                                group.ubo_data[base + 5] = render_max.y;
-                                group.ubo_data[base + 6] = render_max.z;
-                                // vec4[2..]: params packed into vec4s
-                                for (j, &p) in params.iter().enumerate() {
-                                    group.ubo_data[base + 8 + j] = p;
-                                }
-                                group.instance_count += 1;
-                            }
-                        }
-                        OctreeNode::Branch { center: bc, size, children, .. } => {
-                            if frustum.cull_aabb(*bc, *size / 2.0) { continue; }
-                            let near = ((cam_pos.x > bc.x) as usize)
-                                | (((cam_pos.y > bc.y) as usize) << 1)
-                                | (((cam_pos.z > bc.z) as usize) << 2);
-                            for &mask in &[7usize, 6, 5, 3, 4, 2, 1, 0] {
-                                if let Some(ref child) = children[near ^ mask] {
-                                    leaf_stack.push(child.as_ref());
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Phase 2: Draw groups in first-seen order (front-to-back)
-                gl::BindVertexArray(vao);
-                for group in &groups {
-                    if let Some(prog) = octree.programs.get(&group.hash) {
-                        gl::UseProgram(prog.id);
-                        gl::UniformMatrix4fv(prog.u_vp, 1, gl::FALSE, vp.as_ptr());
-                        gl::Uniform3f(prog.u_camera_pos, cam_pos.x, cam_pos.y, cam_pos.z);
-
-                        let fpi = prog.stride * 4;
-                        for batch_start in (0..group.instance_count).step_by(prog.max_instances) {
-                            let batch_count = (group.instance_count - batch_start).min(prog.max_instances);
-                            let float_offset = batch_start * fpi;
-                            let byte_size = batch_count * fpi * std::mem::size_of::<f32>();
-
-                            gl::BindBuffer(gl::UNIFORM_BUFFER, ubo);
-                            gl::BufferData(
-                                gl::UNIFORM_BUFFER,
-                                byte_size as GLsizeiptr,
-                                group.ubo_data[float_offset..].as_ptr() as *const _,
-                                gl::STATIC_DRAW,
-                            );
-                            gl::BindBufferBase(gl::UNIFORM_BUFFER, 0, ubo);
-
-                            gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, batch_count as GLsizei);
-                        }
-                    }
-                }
-            } // end path_tracing_enabled
-            else {
 
                 let frustum = Frustum::from_vp(&vp);
                 let mut to_render = vec![];
@@ -1071,48 +768,6 @@ fn main() {
                 }
                 gl::BindVertexArray(0);
             }
-            }
-            
-                
-
-            // Debug pass: draw translucent boxes for each leaf node
-            if show_debug_boxes {
-                gl::Enable(gl::BLEND);
-                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-                gl::DepthMask(gl::FALSE);
-                gl::UseProgram(debug_prog.0);
-                gl::UniformMatrix4fv(debug_prog.1, 1, gl::FALSE, vp.as_ptr());
-
-                let mut debug_stack: Vec<&OctreeNode> = vec![&octree.root];
-                let mut leaf_idx: u32 = 0;
-                while let Some(node) = debug_stack.pop() {
-                    match node {
-                        OctreeNode::Empty => {}
-                        OctreeNode::Leaf { render_min, render_max, .. } => {
-                            let block_size = *render_max - *render_min;
-                            let model = mat4::block_model_box(*render_min, block_size);
-                            gl::UniformMatrix4fv(debug_prog.2, 1, gl::FALSE, model.as_ptr());
-
-                            // Color by hash of leaf index for variety
-                            let r = ((leaf_idx * 97 + 31) % 255) as f32 / 255.0;
-                            let g = ((leaf_idx * 53 + 73) % 255) as f32 / 255.0;
-                            let b = ((leaf_idx * 179 + 17) % 255) as f32 / 255.0;
-                            gl::Uniform3f(debug_prog.3, r, g, b);
-
-                            gl::DrawArrays(gl::TRIANGLES, 0, 36);
-                            leaf_idx += 1;
-                        }
-                        OctreeNode::Branch { children, .. } => {
-                            for child in children.iter().flatten() {
-                                debug_stack.push(child);
-                            }
-                        }
-                    }
-                }
-
-                gl::DepthMask(gl::TRUE);
-                gl::Disable(gl::BLEND);
-            }
         }
 
         window.swap_buffers();
@@ -1127,13 +782,9 @@ fn main() {
             fps_last_time = now;
         }
     }
-
-    octree.cleanup();
     unsafe {
-        gl::DeleteProgram(debug_prog.0);
         gl::DeleteProgram(voxel_prog.0);
         gl::DeleteVertexArrays(1, &vao);
         gl::DeleteBuffers(1, &vbo);
-        gl::DeleteBuffers(1, &ubo);
     }
 }
