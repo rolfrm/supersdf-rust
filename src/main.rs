@@ -344,6 +344,13 @@ impl Octree {
     }
 }
 
+fn calculate_lod(distance: f32, max_distance: f32, num_lods: u32) -> u32 {
+    let ratio = (distance / max_distance).clamp(0.0, 1.0);
+    let lod = (ratio * num_lods as f32) as u32;
+    lod.min(num_lods - 1)
+}
+
+
 // ---------- Scene ----------
 
 fn build_initial_scene() -> DistanceFieldEnum {
@@ -366,7 +373,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
             sdf = sdf.insert_2(DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color));
         }
     }
-    //sdf = sdf.insert_2(DistanceFieldEnum::aabb(Vec3::new(0.0, -2018.0, 0.0), Vec3::new(field_size as f32, 2000.0, field_size as f32)));
+    sdf = sdf.insert_2(DistanceFieldEnum::aabb(Vec3::new(0.0, -2018.0, 0.0), Vec3::new(field_size as f32, 2000.0, field_size as f32)));
     sdf.optimize_bounds()
 }
 
@@ -489,7 +496,7 @@ unsafe fn upload_chunk(tex: u32, layer: u32, chunk: &VoxelChunk) {
     );
 }
 
-fn get_superchunk(node: &octree2::OctreeNode, center: Vec3, size: f32, palette: &mut Palette, cube_vbo: GLuint) -> SuperChunk {
+fn get_superchunk(node: &octree2::OctreeNode, center: Vec3, size: f32, palette: &mut Palette, cube_vbo: GLuint, min_size: f32) -> SuperChunk {
 
     let mut tex: GLuint = 0;
     unsafe {
@@ -524,7 +531,7 @@ fn get_superchunk(node: &octree2::OctreeNode, center: Vec3, size: f32, palette: 
                     });
                 }
                 octree2::OctreeNode::Branch { center, size, sdf, children } => {
-                    if false && *size <= MAX_LOD_SIZE {
+                    if *size <= min_size {
                         
                         chunk = voxelize_node(center, *size, sdf, palette);
                         let half = *size / 2.0;
@@ -984,10 +991,14 @@ fn main() {
                         }
                         octree2::OctreeNode::Branch { center, size, children, .. } => {
                             if frustum.cull_aabb(*center, *size / 2.0) { continue; }
-
-                            if *size <= 64.0 {
+                            
+                            let dist = (*center - cam_pos).length();
+                            
+                            let lod = calculate_lod(dist, 2000.0, 5) + 1;
+                            
+                            if *size <= 64.0 * (lod as f32) {
                                 if node_instance_lookup.contains_key(node) == false {
-                                    let chunk = get_superchunk(node, *center, *size, &mut palette, vbo);                           
+                                    let chunk = get_superchunk(node, *center, *size, &mut palette, vbo, (lod * 4) as f32);                           
                                     node_instance_lookup.insert(node.clone(), chunk);
                                     
                                 }
@@ -995,12 +1006,7 @@ fn main() {
          
                                 continue;
                             }
-                            // LOD check: if far enough and we have a coarse brick, use it
-                            let dist = (*center - cam_pos).length();
-                            if *size <= MAX_LOD_SIZE && dist > *size * LOD_FACTOR {
-                                
-                                continue;
-                            }
+                            
 
                             // Recurse into children front-to-back
                             let near = ((cam_pos.x > center.x) as usize)
