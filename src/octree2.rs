@@ -9,16 +9,10 @@ pub const ROOT_SIZE: f32 = 1024.0 * 16.0;
 
 #[derive(Clone)]
 pub enum OctreeNode {
-    Leaf {
+    Node {
         center: Vec3,
         size: f32,
         sdf: Rc<DistanceFieldEnum>,
-    },
-    Branch {
-        center: Vec3,
-        size: f32,
-        sdf: Rc<DistanceFieldEnum>,
-        children: [Option<Rc<OctreeNode>>; 8],
     },
     Empty,
 }
@@ -38,13 +32,29 @@ impl OctreeNode {
     pub fn is_empty(&self) -> bool {
         matches!(self, Self::Empty)
     }
+
+    pub fn get_child_nodes(&self) -> [OctreeNode; 8] {
+        // Subdivide into 8 children
+        match self {
+            OctreeNode::Node {center, size ,sdf} => {
+                let child_size = size / 2.0;
+                let children :[OctreeNode;8]= std::array::from_fn(|i| {
+                    let child_center = *center + octant_offset(i, child_size / 2.0);
+                    OctreeNode::get_node(child_center, child_size, sdf)
+                });
+            
+                children
+            }
+            OctreeNode::Empty => {
+                std::array::from_fn(|i| { OctreeNode::Empty})
+            }
+        }
+    }
     
-    pub fn build_node(
+    pub fn get_node(
         center: Vec3,
         size: f32,
-        sdf: &DistanceFieldEnum,
-        old_node: &OctreeNode,
-        reused_count: &mut u32,
+        sdf: &DistanceFieldEnum
     ) -> OctreeNode {
         let optimized = sdf.optimized_for_block(center, size);
 
@@ -71,114 +81,24 @@ impl OctreeNode {
             return OctreeNode::Empty;
         }
 
-        match old_node {
-            OctreeNode::Leaf { sdf, .. }
-            | OctreeNode::Branch { sdf, .. }
-                if optimized.equals(sdf) =>
-            {
-                *reused_count += 1;
-                return old_node.clone();
-            }
-            _ => {}
-        }
-
-
-        if size <= MIN_NODE_SIZE {
-            return OctreeNode::Leaf {
-                center,
-                size,
-                sdf: optimized
-            };
-        }
-
-        // Subdivide into 8 children
-        let child_size = size / 2.0;
-        let children: [Option<Rc<OctreeNode>>; 8] = std::array::from_fn(|i| {
-            let child_center = center + octant_offset(i, child_size / 2.0);
-            let old_child = match old_node {
-                OctreeNode::Branch { children, .. } => children[i]
-                    .as_ref()
-                    .map(|rc| rc.as_ref())
-                    .unwrap_or(&OctreeNode::Empty),
-                _ => &OctreeNode::Empty,
-            };
-            let child = Self::build_node(
-                child_center,
-                child_size,
-                &optimized,
-                old_child,
-                reused_count,
-            );
-
-            match child {
-                OctreeNode::Empty => None,
-                node => Some(Rc::new(node)),
-            }
-        });
-
-        // Count non-empty children
-        let non_empty_count = children.iter().filter(|c| c.is_some()).count();
-
-        // All children empty → this branch is empty
-        if non_empty_count == 0 {
-            return OctreeNode::Empty;
-        }
-
-        OctreeNode::Branch {
+        OctreeNode::Node {
             center,
             size,
-            sdf: optimized,
-            children,
+            sdf: optimized
         }
     }
 
 
-    pub fn count_leaves(&self) -> u32 {
-        match self {
-            OctreeNode::Empty => 0,
-            OctreeNode::Leaf { .. } => 1,
-            OctreeNode::Branch { children, .. } => {
-                children.iter().flatten().map(|c| c.count_leaves()).sum()
-            }
-        }
-    }
-
-    pub fn for_each_leaf<F>(&self, f: &mut F)
-    where
-        F: FnMut(&OctreeNode),
-    {
-        match self {
-            OctreeNode::Empty => {}
-            OctreeNode::Leaf { .. } => f(self),
-            OctreeNode::Branch { children, .. } => {
-                for child in children.iter().flatten() {
-                    child.for_each_leaf(f);
-                }
-            }
-        }
-    }
-
-    pub fn count_branches(node: &OctreeNode) -> u32 {
-        match node {
-            OctreeNode::Empty => 0,
-            OctreeNode::Leaf { .. } => 0,
-            OctreeNode::Branch { children, .. } => {
-                1 + children.iter().flatten().map(|c| Self::count_branches(c)).sum::<u32>()
-            }
-        }
-    }
 }
 
 /// Build an octree from scratch for an SDF (no old tree to diff against).
 pub fn build_octree(sdf: &DistanceFieldEnum, root_size: f32) -> OctreeNode {
     let mut reused_count = 0u32;
 
-    OctreeNode::build_node(
+    OctreeNode::get_node(
         Vec3::new(0.0, 0.0, 0.0),
         root_size,
         sdf,
-        &OctreeNode::Empty,
-        &mut reused_count,
     )
 }
 
@@ -186,22 +106,15 @@ pub fn build_octree(sdf: &DistanceFieldEnum, root_size: f32) -> OctreeNode {
 impl std::hash::Hash for OctreeNode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
-            OctreeNode::Leaf { center, size, .. } => {
+            OctreeNode::Node { center, size, .. } => {
                 0u8.hash(state);
                 center.x.to_bits().hash(state);
                 center.y.to_bits().hash(state);
                 center.z.to_bits().hash(state);
                 size.to_bits().hash(state);
             }
-            OctreeNode::Branch { center, size, .. } => {
-                1u8.hash(state);
-                center.x.to_bits().hash(state);
-                center.y.to_bits().hash(state);
-                center.z.to_bits().hash(state);
-                size.to_bits().hash(state);
-            }
             OctreeNode::Empty => {
-                2u8.hash(state);
+                1u8.hash(state);
             }
         }
     }
@@ -211,21 +124,14 @@ impl PartialEq for OctreeNode {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
-                OctreeNode::Leaf { center: c1, size: s1, sdf: sdf1 },
-                OctreeNode::Leaf { center: c2, size: s2, sdf: sdf2 },
+                OctreeNode::Node { center: c1, size: s1, sdf: sdf1 },
+                OctreeNode::Node { center: c2, size: s2, sdf: sdf2 },
                 ) => sdf1 == sdf2 &&
                 c1.x.to_bits() == c2.x.to_bits()
                 && c1.y.to_bits() == c2.y.to_bits()
                 && c1.z.to_bits() == c2.z.to_bits()
                 && s1.to_bits() == s2.to_bits(),
-            (
-                OctreeNode::Branch { center: c1, size: s1, sdf: sdf1, .. },
-                OctreeNode::Branch { center: c2, size: s2, sdf: sdf2, .. },
-                ) => sdf1 == sdf2 &&
-                c1.x.to_bits() == c2.x.to_bits()
-                && c1.y.to_bits() == c2.y.to_bits()
-                && c1.z.to_bits() == c2.z.to_bits()
-                && s1.to_bits() == s2.to_bits(),
+            
             (OctreeNode::Empty, OctreeNode::Empty) => true,
             _ => false,
         }

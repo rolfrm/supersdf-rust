@@ -268,7 +268,7 @@ impl Palette {
 
 /// Voxelize an octree node (leaf or branch) at 4x4x4 resolution.
 /// Voxel values are palette indices (0=air, 1-255=color).
-fn voxelize_node(center: &Vec3, size: f32, sdf: &DistanceFieldEnum, palette: &mut Palette) -> Option<VoxelChunk> {
+fn voxelize_node(center: Vec3, size: f32, sdf: &DistanceFieldEnum, palette: &mut Palette) -> Option<VoxelChunk> {
     let step = size / 4.0;
     let half = size / 2.0;
     let mut chunk = VoxelChunk { voxels: [0; 64] };
@@ -327,7 +327,7 @@ unsafe fn upload_chunk(tex: u32, layer: u32, chunk: &VoxelChunk) {
     );
 }
 
-fn get_superchunk(node: &octree2::OctreeNode, center: Vec3, size: f32, palette: &mut Palette, cube_vbo: GLuint, min_size: f32) -> SuperChunk {
+fn get_superchunk(node: octree2::OctreeNode, center: Vec3, size: f32, palette: &mut Palette, cube_vbo: GLuint, min_size: f32) -> SuperChunk {
 
     let mut tex: GLuint = 0;
     unsafe {
@@ -346,35 +346,26 @@ fn get_superchunk(node: &octree2::OctreeNode, center: Vec3, size: f32, palette: 
     
     {
         
-        let mut stack: Vec<&octree2::OctreeNode> = vec![node];
+        let mut stack: Vec<octree2::OctreeNode> = vec![node];
         while let Some(n) = stack.pop() {
             let mut chunk = None;
             match n {
                 octree2::OctreeNode::Empty => {}
-                octree2::OctreeNode::Leaf { center, size, sdf } => {
-                    // reached 4x4x4 block
-                    chunk = voxelize_node(center, *size, sdf, palette);
-                    let half = *size / 2.0;
-                    layer.push(VoxelInstanceData{
-                        chunk_pos: [center.x - half, center.y - half, center.z - half],
-                        atlas_layer: layer.len() as u32,
-                        chunk_size: *size 
-                    });
-                }
-                octree2::OctreeNode::Branch { center, size, sdf, children } => {
-                    if *size <= min_size {
+                octree2::OctreeNode::Node { center, size, ref sdf } => {
+                    if size <= min_size {
                         
-                        chunk = voxelize_node(center, *size, sdf, palette);
-                        let half = *size / 2.0;
+                        chunk = voxelize_node(center, size, &sdf, palette);
+                        let half = size / 2.0;
                         layer.push(VoxelInstanceData{
                             chunk_pos: [center.x - half, center.y - half, center.z - half],
                             atlas_layer: layer.len() as u32,
-                            chunk_size: *size
+                            chunk_size: size
                         });
                         
                     }else{
-                        for child in children.iter().flatten() {
-                            stack.push(child.as_ref());
+                        let children = n.get_child_nodes();
+                        for child in children {
+                            stack.push(child);
                         }
                     }
                 
@@ -645,8 +636,7 @@ fn main() {
         if sdf_dirty {
             sdf_dirty = false;
             let mut reused_count = 0u32;
-            octree2 = OctreeNode2::build_node(Vec3::ZERO, 2048.0 * 4.0, &sdf, &octree2, &mut reused_count);
-        
+            octree2 = OctreeNode2::get_node(Vec3::ZERO, 2048.0 * 4.0, &sdf);
         }
 
         // Camera direction from yaw/pitch
@@ -693,41 +683,44 @@ fn main() {
                 let frustum = Frustum::from_vp(&vp);
                 let mut to_render = vec![];
                 {
-                    let mut oct_stack: Vec<&octree2::OctreeNode> = vec![&octree2];
+                    let mut oct_stack: Vec<octree2::OctreeNode> = vec![octree2.clone()];
                     while let Some(node) = oct_stack.pop() {
                     match node {
                         octree2::OctreeNode::Empty => {}
-                        octree2::OctreeNode::Leaf { center, size, .. } => {
+                        
+                        octree2::OctreeNode::Node { center, size, ..} => {
+                            if frustum.cull_aabb(center, size / 2.0) { continue; }
                             
-                            if frustum.cull_aabb(*center, *size / 2.0) { continue; }
-                            panic!("this should never happen!");
-                        }
-                        octree2::OctreeNode::Branch { center, size, children, .. } => {
-                            if frustum.cull_aabb(*center, *size / 2.0) { continue; }
-                            
-                            let dist = (*center - cam_pos).length();
+                            let dist = (center - cam_pos).length();
                             
                             let lod = calculate_lod(dist, 8.0 * 2000.0, 10) + 1;
                             
-                            if *size <= 64.0 * (lod as f32) {
-                                if node_instance_lookup.contains_key(node) == false {
-                                    let chunk = get_superchunk(node, *center, *size, &mut palette, vbo, (lod * 4) as f32);                           
-                                    node_instance_lookup.insert(node.clone(), chunk);
+                            if size <= 64.0 * (lod as f32) {
+                                let copy2 = node.clone();
+                                    
+                                if node_instance_lookup.contains_key(&node) == false {
+                                    let copy = node.clone();
+                                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, (lod * 4) as f32);                           
+                                    node_instance_lookup.insert(copy, chunk);
                                     
                                 }
-                                to_render.push(node);
+                                to_render.push(copy2);
          
                                 continue;
                             }
                             
-
+                            let children = node.get_child_nodes();
                             // Recurse into children front-to-back
                             let near = ((cam_pos.x > center.x) as usize)
                                 | (((cam_pos.y > center.y) as usize) << 1)
                                 | (((cam_pos.z > center.z) as usize) << 2);
                             for &mask in &[7usize, 6, 5, 3, 4, 2, 1, 0] {
-                                if let Some(ref child) = children[near ^ mask] {
-                                    oct_stack.push(child.as_ref());
+                                let child = &children[near ^ mask];
+                                match child {
+                                    octree2::OctreeNode::Node {..} => {
+                                        oct_stack.push(child.clone());
+                                    }
+                                    octree2::OctreeNode::Empty => {}
                                 }
                             }
                         }
