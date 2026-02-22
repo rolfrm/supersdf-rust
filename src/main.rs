@@ -175,14 +175,19 @@ fn calculate_lod(distance: f32, max_distance: f32, num_lods: u32) -> u32 {
 
 // ---------- Scene ----------
 
+fn build_initial_scene0() -> DistanceFieldEnum {
+    let sdf = DistanceFieldEnum::sphere(Vec3::new(0.0, -20000.0, 0.0), 20000.0).colored(Color::rgb(0.3, 0.3, 0.3));
+    return sdf;
+}
+
 fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
     
-    let field_size = 2000;
+    let field_size = 1000;
     let mut items = vec![];
-    for i in (-field_size..field_size).step_by(20) {
-        for j in (-field_size..field_size).step_by(20) {
+    for i in (-field_size..field_size).step_by(10) {
+        for j in (-field_size..field_size).step_by(10) {
             let x = i as f32 + rng.gen_range(-2.0..2.0);
             let z = j as f32 + rng.gen_range(-2.0..2.0);
             let y = -20.0 + rng.gen_range(-2.0..2.0);
@@ -195,11 +200,13 @@ fn build_initial_scene() -> DistanceFieldEnum {
             items.push(Rc::new(DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color)));
         }
     }
+    
     sdf = Add::from_items(items).into();
-    let mut cache = HashSet::new();
-    let sdf2 = sdf.optimized_for_block(Vec3::ZERO, (field_size as f32) * 2.0,&mut cache);
+    let sdf2 = sdf.optimized_for_block(Vec3::ZERO, (field_size as f32) * 2.0);
+
     sdf = (*sdf2).clone();
-    //sdf = sdf.insert_2(DistanceFieldEnum::aabb(Vec3::new(0.0, -2018.0, 0.0), Vec3::new(field_size as f32, 2000.0, field_size as f32)));
+    //sdf = sdf.insert_2(DistanceFieldEnum::aabb(Vec3::new(0.0, -2020.0, 0.0), Vec3::new(field_size as f32, 2000.0, field_size as f32)));
+    
     //sdf = sdf.optimize_bounds();
     println!("SDF: \n{}", SdfPrinter{sdf: sdf.clone()});
     
@@ -222,8 +229,8 @@ pub struct VoxelInstanceData {
 }
 
 const MAX_LAYERS_PER_TEXTURE: usize = 2048;
-const LOD_FACTOR: f32 = 60.0;   // use coarse LOD when distance > size * LOD_FACTOR
-const MAX_LOD_SIZE: f32 = 64.0; // max branch size to voxelize for LOD
+const LOD_FACTOR: f32 = 30.0;   // use coarse LOD when distance > size * LOD_FACTOR
+const MAX_LOD_SIZE: f32 = 128.0; // max branch size to voxelize for LOD
 
 /// Palette: maps u8 index (1-255) to RGB color. Index 0 = air/empty.
 struct Palette {
@@ -505,7 +512,7 @@ fn main() {
     unsafe {
         gl::GenTextures(1, &mut palette_tex);
     }        
-    let mut octree2 = build_octree(&sdf, 2048.0 * 4.0);
+    let mut octree2 = build_octree(&sdf, 2048.0 * 4.0 * 2.0);
     let mut palette_colors =0;
     
     let mut node_instance_lookup = HashMap::new();
@@ -637,9 +644,8 @@ fn main() {
         // Rebuild voxel map if SDF changed
         if sdf_dirty {
             sdf_dirty = false;
-            let mut cache = HashSet::new();
             let mut reused_count = 0u32;
-            octree2 = OctreeNode2::build_node(Vec3::ZERO, 2048.0 * 4.0, &sdf, &octree2, &mut cache, &mut reused_count);
+            octree2 = OctreeNode2::build_node(Vec3::ZERO, 2048.0 * 4.0, &sdf, &octree2, &mut reused_count);
         
         }
 
@@ -701,7 +707,7 @@ fn main() {
                             
                             let dist = (*center - cam_pos).length();
                             
-                            let lod = calculate_lod(dist, 4.0 * 2000.0, 5) + 1;
+                            let lod = calculate_lod(dist, 8.0 * 2000.0, 10) + 1;
                             
                             if *size <= 64.0 * (lod as f32) {
                                 if node_instance_lookup.contains_key(node) == false {
@@ -729,7 +735,7 @@ fn main() {
                 }
             }
 
-                
+            //println!("Rendering: {}", to_render.len());
             // Voxel rendering with LOD: per-frame octree traversal
             if !to_render.is_empty() {
 

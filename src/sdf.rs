@@ -597,10 +597,7 @@ impl DistanceFieldEnum {
         (sb.center - p).length() - sb.radius
     }
 
-    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32,
-                        cache: &mut HashSet<DistanceFieldEnum>, min_d
-                        : f32) -> Rc<DistanceFieldEnum> {
-
+    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, min_d : f32) -> Rc<DistanceFieldEnum> {
         
         let item_min_d = add.items.iter()
             .map(|i| Self::bounds_distance(i, block_center))
@@ -610,7 +607,7 @@ impl DistanceFieldEnum {
         // Optimize each item, filter out Empty
         let mut optimized: Vec<Rc<DistanceFieldEnum>> = Vec::new();
         for item in &add.items {
-            let opt = item.optimized_for_block2(block_center, size, cache, new_min_d);
+            let opt = item.optimized_for_block2(block_center, size, new_min_d);
             if !matches!(opt.as_ref(), DistanceFieldEnum::Empty) {
                 optimized.push(opt);
             }
@@ -674,20 +671,20 @@ impl DistanceFieldEnum {
 
         Rc::new(DistanceFieldEnum::Add(Add::from_items(remaining)))
     }
-    pub fn optimized_for_block(&self, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>) -> Rc<DistanceFieldEnum> {
-        return self.optimized_for_block2(block_center, size, cache, f32::INFINITY);
+    pub fn optimized_for_block(&self, block_center: Vec3, size: f32) -> Rc<DistanceFieldEnum> {
+        return self.optimized_for_block2(block_center, size, f32::INFINITY);
     }
     
-    pub fn optimized_for_block2(&self, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>, min_d :f32) -> Rc<DistanceFieldEnum> {
+    pub fn optimized_for_block2(&self, block_center: Vec3, size: f32, min_d :f32) -> Rc<DistanceFieldEnum> {
         match self {
             DistanceFieldEnum::Add(add) => {
-                DistanceFieldEnum::optimize_add(add, block_center,size, cache, min_d)
+                DistanceFieldEnum::optimize_add(add, block_center,size, min_d)
             },
             DistanceFieldEnum::Subtract(sub) => {
-                let optsub = sub.subtract.optimized_for_block2(block_center, size, cache, min_d);
+                let optsub = sub.subtract.optimized_for_block2(block_center, size, min_d);
                 
                 let subtract_d = optsub.distance(block_center);
-                let left2 = sub.left.optimized_for_block2(block_center, size, cache, min_d);
+                let left2 = sub.left.optimized_for_block2(block_center, size, min_d);
                 if subtract_d > size / 2.0 * SQRT3 * 2.0{
                     if left2.eq(&sub.left) {
                         return sub.left.clone();
@@ -710,7 +707,7 @@ impl DistanceFieldEnum {
                
             },
             DistanceFieldEnum::Coloring(c, i) => {
-                let opt = i.optimized_for_block2( block_center, size, cache, min_d);
+                let opt = i.optimized_for_block2( block_center, size, min_d);
                 if matches!(opt.as_ref(), DistanceFieldEnum::Empty) {
                     return Rc::new(DistanceFieldEnum::Empty);
                 }
@@ -733,10 +730,10 @@ impl DistanceFieldEnum {
         }
     }
 
-    pub fn distance_and_optimize(&self, pos: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>) -> (f32, DistanceFieldEnum) {
+    pub fn distance_and_optimize(&self, pos: Vec3, size: f32) -> (f32, DistanceFieldEnum) {
         let pos2 : Vec3 = pos.map(|x| f32::floor(x / size) * size);
         let sdf2 =
-            self.optimized_for_block(pos2 + Vec3::new(size * 0.5, size * 0.5, size * 0.5), size, cache);//.cached(cache);
+            self.optimized_for_block(pos2 + Vec3::new(size * 0.5, size * 0.5, size * 0.5), size);
         
         return (sdf2.distance(pos), sdf2.as_ref().clone());
     }
@@ -997,7 +994,7 @@ impl DistanceFieldEnum {
     }
 
     pub fn gradient(&self, pos: Vec3, size: f32) -> Vec3 {
-        let focus = self.optimized_for_block(pos, size, &mut HashSet::new());
+        let focus = self.optimized_for_block(pos, size);
         let mut ptx = pos;
         let mut pty = pos;
         let mut ptz = pos;
@@ -1424,7 +1421,7 @@ mod tests {
     #[test]
     fn test_build_big_optimize(){
         let sdf = build_big(6);
-        let sdf2 = sdf.optimized_for_block(Vec3::new(0.0, 0.0, 0.0), 5.0, &mut HashSet::new());
+        let sdf2 = sdf.optimized_for_block(Vec3::new(0.0, 0.0, 0.0), 5.0);
         println!("sdf2: {}", sdf2);
     }
     #[test]
@@ -1479,7 +1476,7 @@ mod tests {
             let d2: Vec3 = Vec3::new(rng.gen_range(-halfsize..halfsize)
                 , rng.gen_range(-halfsize..halfsize)
                 , rng.gen_range(-halfsize..halfsize));
-            let block = sdf.optimized_for_block(d + d2, size, &mut HashSet::new());
+            let block = sdf.optimized_for_block(d + d2, size);
             
             let a = sdf.distance(d);
             let b = block.distance(d);
@@ -1528,7 +1525,7 @@ mod tests {
         println!("Opt: {}", opt);
         run_test_on_range(sdf.clone(), opt, Vec3::new(1.0,0.0,0.0), Vec3::new(5.0, 5.0, 5.0), 1000, 0.2);
     
-        let opt2 = sdf.optimized_for_block(Vec3::new(0.0,0.0,0.0), 1.0, &mut HashSet::new());
+        let opt2 = sdf.optimized_for_block(Vec3::new(0.0,0.0,0.0), 1.0);
         println!("Opt2: {}", opt2);
 
     
@@ -1605,7 +1602,7 @@ mod tests {
     #[test]
     fn test_optimize_preserve_colors() {
         let sdf = build_test().optimize_bounds();
-        let sdf2 = sdf.optimized_for_block(Vec3::new(-2.0, 0.0, 0.0), 5.0, &mut HashSet::new());
+        let sdf2 = sdf.optimized_for_block(Vec3::new(-2.0, 0.0, 0.0), 5.0);
         println!("g: {}", sdf);
     }
 

@@ -44,10 +44,9 @@ impl OctreeNode {
         size: f32,
         sdf: &DistanceFieldEnum,
         old_node: &OctreeNode,
-        cache: &mut HashSet<DistanceFieldEnum>,
         reused_count: &mut u32,
     ) -> OctreeNode {
-        let optimized = sdf.optimized_for_block(center, size, cache);
+        let optimized = sdf.optimized_for_block(center, size);
 
         // Empty check
         if optimized.is_empty() {
@@ -77,7 +76,6 @@ impl OctreeNode {
             | OctreeNode::Branch { sdf, .. }
                 if optimized.equals(sdf) =>
             {
-                // Collect all hashes from the reused subtree so we don't delete their programs
                 *reused_count += 1;
                 return old_node.clone();
             }
@@ -85,12 +83,7 @@ impl OctreeNode {
         }
 
 
-        // Leaf condition: stop subdividing at min size or <=6 primitives
         if size <= MIN_NODE_SIZE {
-            let half = size / 2.0;
-            let cell_min = center - Vec3::new(half, half, half);
-            let cell_max = center + Vec3::new(half, half, half);
-            let content = optimized.calculate_aabb_bounds();
             return OctreeNode::Leaf {
                 center,
                 size,
@@ -114,7 +107,6 @@ impl OctreeNode {
                 child_size,
                 &optimized,
                 old_child,
-                cache,
                 reused_count,
             );
 
@@ -179,7 +171,6 @@ impl OctreeNode {
 
 /// Build an octree from scratch for an SDF (no old tree to diff against).
 pub fn build_octree(sdf: &DistanceFieldEnum, root_size: f32) -> OctreeNode {
-    let mut cache = HashSet::new();
     let mut reused_count = 0u32;
 
     OctreeNode::build_node(
@@ -187,7 +178,6 @@ pub fn build_octree(sdf: &DistanceFieldEnum, root_size: f32) -> OctreeNode {
         root_size,
         sdf,
         &OctreeNode::Empty,
-        &mut cache,
         &mut reused_count,
     )
 }
