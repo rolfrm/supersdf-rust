@@ -179,10 +179,10 @@ fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
     
-    let field_size = 4000;
-
-    for i in (-field_size..field_size).step_by(10) {
-        for j in (-field_size..field_size).step_by(10) {
+    let field_size = 2000;
+    let mut items = vec![];
+    for i in (-field_size..field_size).step_by(20) {
+        for j in (-field_size..field_size).step_by(20) {
             let x = i as f32 + rng.gen_range(-2.0..2.0);
             let z = j as f32 + rng.gen_range(-2.0..2.0);
             let y = -20.0 + rng.gen_range(-2.0..2.0);
@@ -192,11 +192,19 @@ fn build_initial_scene() -> DistanceFieldEnum {
                 (rng.gen_range(0.1..4.0) as f32).floor() * 0.25,
                 (rng.gen_range(0.1..4.0) as f32).floor() * 0.25,
             );
-            sdf = sdf.insert_2(DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color));
+            items.push(Rc::new(DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color)));
         }
     }
-    sdf = sdf.insert_2(DistanceFieldEnum::aabb(Vec3::new(0.0, -2018.0, 0.0), Vec3::new(field_size as f32, 2000.0, field_size as f32)));
-    sdf.optimize_bounds()
+    sdf = Add::from_items(items).into();
+    let mut cache = HashSet::new();
+    let sdf2 = sdf.optimized_for_block(Vec3::ZERO, (field_size as f32) * 2.0,&mut cache);
+    sdf = (*sdf2).clone();
+    //sdf = sdf.insert_2(DistanceFieldEnum::aabb(Vec3::new(0.0, -2018.0, 0.0), Vec3::new(field_size as f32, 2000.0, field_size as f32)));
+    //sdf = sdf.optimize_bounds();
+    println!("SDF: \n{}", SdfPrinter{sdf: sdf.clone()});
+    
+    return sdf;
+        
 }
 
 #[repr(C)]
@@ -424,6 +432,7 @@ fn get_superchunk(node: &octree2::OctreeNode, center: Vec3, size: f32, palette: 
 
 fn main() {
     let mut sdf = build_initial_scene();
+    
     let mut sdf_dirty = true;
     let mut sphere_count: u32 = 0;
 
@@ -496,7 +505,7 @@ fn main() {
     unsafe {
         gl::GenTextures(1, &mut palette_tex);
     }        
-    let mut octree2 = build_octree(&sdf, 2048.0);
+    let mut octree2 = build_octree(&sdf, 2048.0 * 4.0);
     let mut palette_colors =0;
     
     let mut node_instance_lookup = HashMap::new();
@@ -556,7 +565,7 @@ fn main() {
                                     (sphere_count * 53 % 255) as f32 / 255.0,
                                     (sphere_count * 179 % 255) as f32 / 255.0,
                                 ));
-                            sdf = sdf.add(new_sphere).optimize_bounds();
+                            sdf = sdf.insert_2(new_sphere);
                             sdf_dirty = true;
                             println!("Added sphere #{} at {}", sphere_count, cam_pos);
                         }
@@ -595,8 +604,9 @@ fn main() {
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 10000.0) {
-                        sdf = sdf.subtract(DistanceFieldEnum::sphere(hit_pos, 5.0));
-                        sdf = sdf.optimize_bounds();
+                        sdf = sdf.insert_2(DistanceFieldEnum::sphere(hit_pos, 5.0)
+                                      .colored(Color::rgb(1.0, 1.0, 1.0)));
+                        //sdf = sdf.optimize_bounds();
                         sdf_dirty = true;
                         println!("Subtracted sphere at {}", hit_pos);
                     }
@@ -691,7 +701,7 @@ fn main() {
                             
                             let dist = (*center - cam_pos).length();
                             
-                            let lod = calculate_lod(dist, 2000.0, 5) + 1;
+                            let lod = calculate_lod(dist, 4.0 * 2000.0, 5) + 1;
                             
                             if *size <= 64.0 * (lod as f32) {
                                 if node_instance_lookup.contains_key(node) == false {

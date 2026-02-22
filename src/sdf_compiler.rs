@@ -153,14 +153,12 @@ impl CompilerCtx {
         idx
     }
 
-    /// Return (left, right) children of an Add in normalized order by topology hash,
-    /// so that Add(A, B) and Add(B, A) produce identical shader code.
-    fn ordered_add_children(add: &crate::sdf::Add) -> (&Rc<DistanceFieldEnum>, &Rc<DistanceFieldEnum>) {
-        if add.left.topology_hash() <= add.right.topology_hash() {
-            (&add.left, &add.right)
-        } else {
-            (&add.right, &add.left)
-        }
+    /// Return items of an Add in normalized order by topology hash,
+    /// so that permutations produce identical shader code.
+    fn ordered_add_items(add: &crate::sdf::Add) -> Vec<&Rc<DistanceFieldEnum>> {
+        let mut items: Vec<&Rc<DistanceFieldEnum>> = add.items.iter().collect();
+        items.sort_by_key(|item| item.topology_hash());
+        items
     }
 
     fn ensure_sphere_dist(&mut self) {
@@ -333,7 +331,8 @@ float sphere_ray_intersect(vec3 ro, vec3 rd, int i) {
             DistanceFieldEnum::Add(add) => {
                 self.ensure_sphere_dist();
                 let id = self.fresh_id();
-                let (child_a, child_b) = Self::ordered_add_children(add);
+                let items = Self::ordered_add_items(add);
+
                 // Bounding sphere early-out
                 let bidx = self.params(4);
                 lines.push_str(&format!(
@@ -346,45 +345,48 @@ float sphere_ray_intersect(vec3 ro, vec3 rd, int i) {
                 lines.push_str("        g_second_d = 1.0e10;\n");
                 lines.push_str("    } else {\n");
 
-                // Left child
-                let mut left_lines = String::new();
-                let left_expr = self.emit_distance(child_a, &mut left_lines);
-
-                // Right child
-                let mut right_lines = String::new();
-                let right_expr = self.emit_distance(child_b, &mut right_lines);
-
                 let sid = self.fresh_id();
 
-                // Emit left lines (indented)
-                for line in left_lines.lines() {
+                // First item: emit distance, save as best + save globals
+                let mut first_lines = String::new();
+                let first_expr = self.emit_distance(items[0], &mut first_lines);
+                for line in first_lines.lines() {
                     lines.push_str("    ");
                     lines.push_str(line);
                     lines.push('\n');
                 }
-                // Save left globals
-                lines.push_str(&format!("        int _lt{sid} = g_closest_type;\n"));
-                lines.push_str(&format!("        int _li{sid} = g_closest_idx;\n"));
-                lines.push_str(&format!("        float _ls{sid} = g_second_d;\n"));
-                lines.push_str(&format!("        float _ld{sid} = {left_expr};\n"));
+                lines.push_str(&format!("        int _bt{sid} = g_closest_type;\n"));
+                lines.push_str(&format!("        int _bi{sid} = g_closest_idx;\n"));
+                lines.push_str(&format!("        float _bs{sid} = g_second_d;\n"));
+                lines.push_str(&format!("        float _best{sid} = {first_expr};\n"));
 
-                // Emit right lines (indented)
-                for line in right_lines.lines() {
-                    lines.push_str("    ");
-                    lines.push_str(line);
-                    lines.push('\n');
+                // Each subsequent item: emit distance, compare with best, update if closer
+                for item in &items[1..] {
+                    let mut item_lines = String::new();
+                    let item_expr = self.emit_distance(item, &mut item_lines);
+                    let iid = self.fresh_id();
+
+                    for line in item_lines.lines() {
+                        lines.push_str("    ");
+                        lines.push_str(line);
+                        lines.push('\n');
+                    }
+                    lines.push_str(&format!("        float _id{iid} = {item_expr};\n"));
+                    lines.push_str(&format!("        if (_id{iid} < _best{sid}) {{\n"));
+                    lines.push_str(&format!("            _bs{sid} = min(_best{sid}, _bs{sid});\n"));
+                    lines.push_str(&format!("            _best{sid} = _id{iid};\n"));
+                    lines.push_str(&format!("            _bt{sid} = g_closest_type;\n"));
+                    lines.push_str(&format!("            _bi{sid} = g_closest_idx;\n"));
+                    lines.push_str(&format!("        }} else {{\n"));
+                    lines.push_str(&format!("            _bs{sid} = min(_id{iid}, _bs{sid});\n"));
+                    lines.push_str(&format!("        }}\n"));
                 }
-                lines.push_str(&format!("        float _rd{sid} = {right_expr};\n"));
 
-                // Pick winner
-                lines.push_str(&format!("        if (_ld{sid} < _rd{sid}) {{\n"));
-                lines.push_str(&format!("            g_closest_type = _lt{sid};\n"));
-                lines.push_str(&format!("            g_closest_idx = _li{sid};\n"));
-                lines.push_str(&format!("            g_second_d = min(_rd{sid}, _ls{sid});\n"));
-                lines.push_str(&format!("        }} else {{\n"));
-                lines.push_str(&format!("            g_second_d = min(_ld{sid}, g_second_d);\n"));
-                lines.push_str(&format!("        }}\n"));
-                lines.push_str(&format!("        _da{id} = min(_ld{sid}, _rd{sid});\n"));
+                // Restore best globals at end
+                lines.push_str(&format!("        g_closest_type = _bt{sid};\n"));
+                lines.push_str(&format!("        g_closest_idx = _bi{sid};\n"));
+                lines.push_str(&format!("        g_second_d = _bs{sid};\n"));
+                lines.push_str(&format!("        _da{id} = _best{sid};\n"));
 
                 lines.push_str("    }\n");
                 format!("_da{id}")
@@ -476,41 +478,40 @@ float sphere_ray_intersect(vec3 ro, vec3 rd, int i) {
             },
 
             DistanceFieldEnum::Add(add) => {
-                let (child_a, child_b) = Self::ordered_add_children(add);
-                // Need distance of each branch to pick the closer one's color
-                let ld = {
-                    let mut dl = String::new();
-                    let expr = self.emit_distance(child_a, &mut dl);
-                    lines.push_str(&dl);
-                    expr
-                };
-                let rd = {
-                    let mut dr = String::new();
-                    let expr = self.emit_distance(child_b, &mut dr);
-                    lines.push_str(&dr);
-                    expr
-                };
+                let items = Self::ordered_add_items(add);
                 let id = self.fresh_id();
-                lines.push_str(&format!("    float _ld{id} = {ld};\n"));
-                lines.push_str(&format!("    float _rd{id} = {rd};\n"));
 
-                let lc = {
+                // Emit distance for each item
+                let mut dist_exprs = Vec::new();
+                for item in &items {
+                    let mut dl = String::new();
+                    let expr = self.emit_distance(item, &mut dl);
+                    lines.push_str(&dl);
+                    dist_exprs.push(expr);
+                }
+                for (i, expr) in dist_exprs.iter().enumerate() {
+                    lines.push_str(&format!("    float _cd{}_{} = {};\n", id, i, expr));
+                }
+
+                // Emit color for each item
+                let mut color_exprs = Vec::new();
+                for item in &items {
                     let mut cl = String::new();
-                    let expr = self.emit_color(child_a, &mut cl);
+                    let expr = self.emit_color(item, &mut cl);
                     lines.push_str(&cl);
-                    expr
-                };
-                let rc = {
-                    let mut cr = String::new();
-                    let expr = self.emit_color(child_b, &mut cr);
-                    lines.push_str(&cr);
-                    expr
-                };
+                    color_exprs.push(expr);
+                }
 
+                // Chain comparisons to find closest, return its color
                 let cid = self.fresh_id();
-                lines.push_str(&format!(
-                    "    vec3 _ca{cid} = (_ld{id} < _rd{id}) ? {lc} : {rc};\n"
-                ));
+                lines.push_str(&format!("    vec3 _ca{cid} = {};\n", color_exprs[0]));
+                lines.push_str(&format!("    float _cbd{cid} = _cd{id}_0;\n"));
+                for i in 1..items.len() {
+                    lines.push_str(&format!(
+                        "    if (_cd{id}_{i} < _cbd{cid}) {{ _ca{cid} = {}; _cbd{cid} = _cd{id}_{i}; }}\n",
+                        color_exprs[i]
+                    ));
+                }
                 format!("_ca{cid}")
             }
 
@@ -692,15 +693,16 @@ fn collect_distance_params(sdf: &DistanceFieldEnum, params: &mut Vec<f32>) {
         }
 
         DistanceFieldEnum::Add(add) => {
-            let (child_a, child_b) = CompilerCtx::ordered_add_children(add);
+            let items = CompilerCtx::ordered_add_items(add);
             // Bounding sphere params
             params.push(add.bounds.center.x);
             params.push(add.bounds.center.y);
             params.push(add.bounds.center.z);
             params.push(add.bounds.radius);
-            // Children in normalized order
-            collect_distance_params(child_a, params);
-            collect_distance_params(child_b, params);
+            // Children in sorted order
+            for item in &items {
+                collect_distance_params(item, params);
+            }
         }
 
         DistanceFieldEnum::Subtract(sub) => {
@@ -749,14 +751,16 @@ fn collect_color_params(sdf: &DistanceFieldEnum, params: &mut Vec<f32>) {
         },
 
         DistanceFieldEnum::Add(add) => {
-            let (child_a, child_b) = CompilerCtx::ordered_add_children(add);
-            // Re-collect distance params for both children (mirrors emit_color's
+            let items = CompilerCtx::ordered_add_items(add);
+            // Re-collect distance params for all children (mirrors emit_color's
             // call to emit_distance on each child)
-            collect_distance_params(child_a, params);
-            collect_distance_params(child_b, params);
+            for item in &items {
+                collect_distance_params(item, params);
+            }
             // Then collect color params for each child
-            collect_color_params(child_a, params);
-            collect_color_params(child_b, params);
+            for item in &items {
+                collect_color_params(item, params);
+            }
         }
 
         DistanceFieldEnum::Subtract(sub) => {

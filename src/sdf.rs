@@ -378,11 +378,9 @@ impl Noise {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Add {
-    pub(crate) left: Rc<DistanceFieldEnum>,
-    pub(crate) right: Rc<DistanceFieldEnum>,
-    size : u32,
+    pub(crate) items: Vec<Rc<DistanceFieldEnum>>,
     pub(crate) bounds: Sphere,
-    hash: u64
+
 }
 fn rgba_interp(a: Color, b: Color, v: f32) -> Color {
 
@@ -398,31 +396,34 @@ fn rgba_interp(a: Color, b: Color, v: f32) -> Color {
 }
 impl Add {
     pub fn new(left: DistanceFieldEnum, right: DistanceFieldEnum) -> Add {
-        Add::from_rc(Rc::new(left), Rc::new(right))
+        Add::from_items(vec![Rc::new(left), Rc::new(right)])
     }
 
     pub fn new2(left: DistanceFieldEnum, right: DistanceFieldEnum) -> DistanceFieldEnum {
-        DistanceFieldEnum::Add(Add::from_rc(Rc::new(left), Rc::new(right)))
+        DistanceFieldEnum::Add(Add::from_items(vec![Rc::new(left), Rc::new(right)]))
     }
 
-    fn from_rc(left: Rc<DistanceFieldEnum> , right: Rc<DistanceFieldEnum>) -> Add {
-        let size = left.size() + right.size() + 1;
+    pub fn from_rc(left: Rc<DistanceFieldEnum>, right: Rc<DistanceFieldEnum>) -> Add {
+        Add::from_items(vec![left, right])
+    }
 
-        let s1 = right.calculate_sphere_bounds();
-        let s2 = left.calculate_sphere_bounds();
-        let mut hasher = DefaultHasher::new();
-        let num = 32143232;
-        
-        num.hash(&mut hasher);
-        left.hash(&mut hasher);
-        right.hash(&mut hasher);
-        let hash = hasher.finish();
+    pub fn from_items(mut items: Vec<Rc<DistanceFieldEnum>>) -> Add {
+        // Sort items by bounds center (x, then y, then z) for deterministic ordering
+        items.sort_by(|a, b| {
+            let ab = a.calculate_sphere_bounds();
+            let bb = b.calculate_sphere_bounds();
+            ab.center.x.partial_cmp(&bb.center.x).unwrap()
+                .then(ab.center.y.partial_cmp(&bb.center.y).unwrap())
+                .then(ab.center.z.partial_cmp(&bb.center.z).unwrap())
+        });
+
+        let bounds = items.iter()
+            .map(|i| i.calculate_sphere_bounds())
+            .reduce(|a, b| Sphere::two_sphere_bounds(&a, &b))
+            .unwrap_or_else(|| Sphere::new(Vec3::zeros(), f32::INFINITY));
         Add {
-            left: left,
-            right: right,
-            size: size,
-            bounds: Sphere::two_sphere_bounds(&s1, &s2),
-            hash: hash
+            items,
+            bounds,
         }
     }
 
@@ -432,17 +433,22 @@ impl Add {
             return d1;
         }
 
-        f32::min(self.left.distance(pos), self.right.distance(pos))
+        self.items.iter()
+            .map(|item| item.distance(pos))
+            .fold(f32::INFINITY, f32::min)
     }
 
     fn color(&self, p: Vec3) -> Color {
-        let ld = self.left.distance(p);
-        let rd = self.right.distance(p);
-        if ld < rd {
-            return self.left.color(p);
+        let mut best_d = f32::INFINITY;
+        let mut best_color = Color::TRANSPARENT;
+        for item in &self.items {
+            let d = item.distance(p);
+            if d < best_d {
+                best_d = d;
+                best_color = item.color(p);
+            }
         }
-        return self.right.color(p);
-        
+        best_color
     }
 }
 
@@ -530,15 +536,15 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Add(add) => {
                 3u8.hash(state);
                 // Order-invariant: hash children in sorted order by their topology hash
-                let mut left_h = DefaultHasher::new();
-                add.left.hash_topology(&mut left_h);
-                let lh = left_h.finish();
-                let mut right_h = DefaultHasher::new();
-                add.right.hash_topology(&mut right_h);
-                let rh = right_h.finish();
-                let (lo, hi) = if lh <= rh { (lh, rh) } else { (rh, lh) };
-                lo.hash(state);
-                hi.hash(state);
+                let mut hashes: Vec<u64> = add.items.iter().map(|item| {
+                    let mut h = DefaultHasher::new();
+                    item.hash_topology(&mut h);
+                    h.finish()
+                }).collect();
+                hashes.sort();
+                for h in hashes {
+                    h.hash(state);
+                }
             }
             DistanceFieldEnum::Subtract(sub) => {
                 4u8.hash(state);
@@ -586,44 +592,87 @@ impl DistanceFieldEnum {
         None
     }
 
-    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>, min_d : f32) -> Rc<DistanceFieldEnum> {
-        let d1 = add.left.distance(block_center);
-        let d2 = add.right.distance(block_center);
-        let new_min_d = (f32::min(d1, f32::min(d2, min_d)) * 10.0).floor() / 10.0;
-        let left_opt = add.left.optimized_for_block2(block_center, size, cache, new_min_d);
-        let right_opt = add.right.optimized_for_block2(block_center, size, cache, new_min_d);
+    fn bounds_distance(sdf: &DistanceFieldEnum, p: Vec3) -> f32 {
+        let sb = sdf.calculate_sphere_bounds();
+        (sb.center - p).length() - sb.radius
+    }
 
-        if matches!(left_opt.as_ref(), DistanceFieldEnum::Empty) {
-            return right_opt;
-        }
-        if matches!(right_opt.as_ref(), DistanceFieldEnum::Empty) {
-            return left_opt;
-        }
+    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32,
+                        cache: &mut HashSet<DistanceFieldEnum>, min_d
+                        : f32) -> Rc<DistanceFieldEnum> {
+
         
-        let left_d = left_opt.distance(block_center);
-        let right_d = right_opt.distance(block_center);
-        let half = size / 2.0;
-        if left_d > right_d + half * SQRT3 * SQRT_2{
-            return right_opt;
-        }
-        if right_d > left_d + half * SQRT3 * SQRT_2{
-            return left_opt;
-        }
-        if f32::min(right_d, left_d) > min_d + half * SQRT3 * 2.0  {
-            return DistanceFieldEnum::Empty{}.into();
-        }
-        if f32::min(right_d, left_d) > half * SQRT3 * 2.0 * 1.5  {
-            if right_d < left_d {
-                return right_opt;
+        let item_min_d = add.items.iter()
+            .map(|i| Self::bounds_distance(i, block_center))
+            .fold(f32::INFINITY, f32::min);
+        let new_min_d = (f32::min(item_min_d, min_d) * 10.0).floor() / 10.0;
+
+        // Optimize each item, filter out Empty
+        let mut optimized: Vec<Rc<DistanceFieldEnum>> = Vec::new();
+        for item in &add.items {
+            let opt = item.optimized_for_block2(block_center, size, cache, new_min_d);
+            if !matches!(opt.as_ref(), DistanceFieldEnum::Empty) {
+                optimized.push(opt);
             }
-            return left_opt;
         }
         
-        if left_opt.eq(&add.left) && right_opt.eq(&add.right) {
-            let add2 = add.clone();
-            return Rc::new(DistanceFieldEnum::Add(add2).into());
+        if optimized.is_empty() {
+            return Rc::new(DistanceFieldEnum::Empty);
         }
-        return Rc::new(Add::from_rc(left_opt, right_opt).into());
+        if optimized.len() == 1 {
+            return optimized.into_iter().next().unwrap();
+        }
+
+        // Distance-based filtering using bounds estimates
+        let half = size / 2.0;
+        let opt_distances: Vec<f32> = optimized.iter().map(|i| Self::bounds_distance(i, block_center)).collect();
+        let closest_d = opt_distances.iter().copied().fold(f32::INFINITY, f32::min);
+
+        // Eliminate items too far from block center relative to closest
+        let mut remaining: Vec<Rc<DistanceFieldEnum>> = Vec::new();
+        for (i, opt) in optimized.iter().enumerate() {
+            let d = opt_distances[i];
+            if d <= closest_d + half * SQRT3 * SQRT_2 {
+                remaining.push(opt.clone());
+            }
+        }
+
+        if remaining.is_empty() {
+            return Rc::new(DistanceFieldEnum::Empty);
+        }
+        if remaining.len() == 1 {
+            return remaining.into_iter().next().unwrap();
+        }
+
+        let remaining_min = remaining.iter()
+            .map(|i| Self::bounds_distance(i, block_center))
+            .fold(f32::INFINITY, f32::min);
+
+        if remaining_min > min_d + half * SQRT3 * 2.0 {
+            return Rc::new(DistanceFieldEnum::Empty);
+        }
+        if remaining_min > half * SQRT3 * 2.0 * 1.5 {
+            // Return just the closest by bounds estimate
+            let mut best = &remaining[0];
+            let mut best_d = Self::bounds_distance(best, block_center);
+            for item in &remaining[1..] {
+                let d = Self::bounds_distance(item, block_center);
+                if d < best_d {
+                    best_d = d;
+                    best = item;
+                }
+            }
+            return best.clone();
+        }
+
+        // Check if unchanged
+        if remaining.len() == add.items.len()
+            && remaining.iter().zip(add.items.iter()).all(|(a, b)| a.eq(b))
+        {
+            return Rc::new(DistanceFieldEnum::Add(add.clone()));
+        }
+
+        Rc::new(DistanceFieldEnum::Add(Add::from_items(remaining)))
     }
     pub fn optimized_for_block(&self, block_center: Vec3, size: f32, cache: &mut HashSet<DistanceFieldEnum>) -> Rc<DistanceFieldEnum> {
         return self.optimized_for_block2(block_center, size, cache, f32::INFINITY);
@@ -695,6 +744,11 @@ impl DistanceFieldEnum {
     pub fn insert(&self, sdf: DistanceFieldEnum) -> DistanceFieldEnum {
         match self {
             DistanceFieldEnum::Empty => sdf,
+            DistanceFieldEnum::Add (add) =>{
+                let mut items2 : Vec<Rc<DistanceFieldEnum>> = (&add.items).into_iter().map(|i| i.clone()).collect();
+                items2.push(Rc::new(sdf));
+                Add::from_items(items2).into()
+            },
             _ => Add::new(self.clone(), sdf).into(),
         }
     }
@@ -703,28 +757,8 @@ impl DistanceFieldEnum {
         
         match self {
             DistanceFieldEnum::Add(add) => {
-                let l0 = add.left.calculate_sphere_bounds().center;
-                let l1 = add.right.calculate_sphere_bounds().center;
-                let l3 = (l0 - l1).length();
-                
-                let s1 = add.left.size();
-                let s2 = add.right.size();
-                
-                let bias = s1 as f32 / (s2 + s1) as f32;
-
-                let d1 = add.left.distance(bounds.center) * bias;
-                let d2 = add.right.distance(bounds.center) * (1.0 - bias);
-                
-                //println!("Into add! {} {} {}", d1, d2, l3);
-                
-                if d1 < d2 && d1 < l3 * 0.9 {
-                    return Add::from_rc(Rc::new(add.left.insert_3(sdf, bounds)),add.right.clone()).into();
-                }else if d2 < d1 && d2 < l3* 0.9 {
-                    return Add::from_rc( add.left.clone(), Rc::new(add.right.insert_3(sdf, bounds))).into();
-                }
                 return self.insert(sdf.into());
             },
-            //DistanceFieldEnum::Coloring(c, other) => DistanceFieldEnum::Coloring(c.clone(), Rc::new(other.insert_2(sdf))),
             _ => self.insert(sdf.into())
         }
     }
@@ -764,74 +798,176 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Empty => AabbBounds::infinite(),
             DistanceFieldEnum::Coloring(_, inner) => inner.calculate_aabb_bounds(),
             DistanceFieldEnum::Add(add) => {
-                let left = add.left.calculate_aabb_bounds();
-                let right = add.right.calculate_aabb_bounds();
-                left.union(&right)
+                add.items.iter()
+                    .map(|i| i.calculate_aabb_bounds())
+                    .reduce(|a, b| a.union(&b))
+                    .unwrap_or_else(AabbBounds::infinite)
             }
             DistanceFieldEnum::Subtract(sub) => sub.left.calculate_aabb_bounds(),
         }
     }
 
-    pub fn calculate_sphere_bounds2(&self, cache: &mut HashMap<DistanceFieldEnum, Sphere>) -> Sphere {
-        if let Some(x) = cache.get(self) {
-            return x.clone();
-        }
-        let r = 
-        match self {
-            DistanceFieldEnum::Primitive(p) =>{
-                match p {
-                    Primitive::Sphere(s) => s.clone(),
-                    Primitive::Aabb(aabb) => Sphere::new(aabb.center, aabb.radius.length()),
-                }
-            },
-            DistanceFieldEnum::Empty => Sphere::new(Vec3::zeros(), f32::INFINITY),
-            DistanceFieldEnum::Coloring(_,inner) => inner.calculate_sphere_bounds2(cache),
-            DistanceFieldEnum::Add(add) => {
-                let left = add.left.calculate_sphere_bounds2(cache);
-                let right = add.right.calculate_sphere_bounds2(cache);
-
-                Sphere::two_sphere_bounds(&left, &right)
-            },
-            DistanceFieldEnum::Subtract(sub) => sub.left.calculate_sphere_bounds2(cache)
-        };
-        cache.insert(self.clone(), r.clone());
-        r
-    }
-
     pub fn optimize_bounds(&self) -> DistanceFieldEnum {
         match self {
-            DistanceFieldEnum::Add(add) => {
-                add.clone().into()
+            DistanceFieldEnum::Add(_) => {
+                // 1. Flatten nested Adds recursively into a flat list
+                fn flatten_add(sdf: &DistanceFieldEnum, out: &mut Vec<Rc<DistanceFieldEnum>>) {
+                    match sdf {
+                        DistanceFieldEnum::Add(add) => {
+                            for item in &add.items {
+                                flatten_add(item, out);
+                            }
+                        }
+                        _ => out.push(Rc::new(sdf.clone())),
+                    }
+                }
+                let mut flat_items: Vec<Rc<DistanceFieldEnum>> = Vec::new();
+                flatten_add(self, &mut flat_items);
+
+                // 2. Optimize each item recursively
+                let flat_items: Vec<Rc<DistanceFieldEnum>> = flat_items.into_iter()
+                    .map(|item| Rc::new(item.optimize_bounds()))
+                    .collect();
+
+                // 3. Compute sphere bounds for each
+                let item_bounds: Vec<Sphere> = flat_items.iter()
+                    .map(|i| i.calculate_sphere_bounds())
+                    .collect();
+
+                // 4. Group using union-find: merge groups where 50% bounds overlap
+                let n = flat_items.len();
+                let mut parent: Vec<usize> = (0..n).collect();
+
+                fn uf_find(parent: &mut Vec<usize>, i: usize) -> usize {
+                    if parent[i] != i {
+                        parent[i] = uf_find(parent, parent[i]);
+                    }
+                    parent[i]
+                }
+                fn uf_union(parent: &mut Vec<usize>, i: usize, j: usize) {
+                    let ri = uf_find(parent, i);
+                    let rj = uf_find(parent, j);
+                    if ri != rj { parent[ri] = rj; }
+                }
+
+                for i in 0..n {
+                    for j in (i+1)..n {
+                        let center_distance = (item_bounds[i].center - item_bounds[j].center).length();
+                        if center_distance < (item_bounds[i].radius + item_bounds[j].radius) * 0.5 {
+                            uf_union(&mut parent, i, j);
+                        }
+                    }
+                }
+
+                // Collect groups
+                let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+                for i in 0..n {
+                    let root = uf_find(&mut parent, i);
+                    groups.entry(root).or_default().push(i);
+                }
+
+                // 5. Split groups > 10 items by proximity
+                fn split_large_group(indices: Vec<usize>, bounds: &[Sphere]) -> Vec<Vec<usize>> {
+                    if indices.len() <= 10 {
+                        return vec![indices];
+                    }
+                    // Find longest axis
+                    let centers: Vec<Vec3> = indices.iter().map(|&i| bounds[i].center).collect();
+                    let min_c = centers.iter().fold(
+                        Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
+                        |a, b| vec3_min(a, *b));
+                    let max_c = centers.iter().fold(
+                        Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
+                        |a, b| vec3_max(a, *b));
+                    let extent = max_c - min_c;
+
+                    let axis = if extent.x >= extent.y && extent.x >= extent.z { 0 }
+                        else if extent.y >= extent.z { 1 }
+                        else { 2 };
+
+                    let mut sorted = indices;
+                    sorted.sort_by(|&a, &b| {
+                        let va = match axis { 0 => bounds[a].center.x, 1 => bounds[a].center.y, _ => bounds[a].center.z };
+                        let vb = match axis { 0 => bounds[b].center.x, 1 => bounds[b].center.y, _ => bounds[b].center.z };
+                        va.partial_cmp(&vb).unwrap()
+                    });
+
+                    let mid = sorted.len() / 2;
+                    let left = sorted[..mid].to_vec();
+                    let right = sorted[mid..].to_vec();
+
+                    let mut result = split_large_group(left, bounds);
+                    result.extend(split_large_group(right, bounds));
+                    result
+                }
+
+                let mut final_groups: Vec<Vec<usize>> = Vec::new();
+                for (_, group) in groups {
+                    final_groups.extend(split_large_group(group, &item_bounds));
+                }
+
+                // 6. Build Add nodes from groups
+                let mut group_nodes: Vec<Rc<DistanceFieldEnum>> = Vec::new();
+                for group in final_groups {
+                    if group.len() == 1 {
+                        group_nodes.push(flat_items[group[0]].clone());
+                    } else {
+                        let items: Vec<Rc<DistanceFieldEnum>> = group.into_iter()
+                            .map(|i| flat_items[i].clone())
+                            .collect();
+                        group_nodes.push(Rc::new(DistanceFieldEnum::Add(Add::from_items(items))));
+                    }
+                }
+
+                if group_nodes.len() == 1 {
+                    group_nodes.into_iter().next().unwrap().as_ref().clone()
+                } else {
+                    DistanceFieldEnum::Add(Add::from_items(group_nodes))
+                }
             },
             DistanceFieldEnum::Subtract(sub) => {
                 let left2 = sub.left.optimize_bounds();
                 let subbounds = sub.subtract.calculate_sphere_bounds();
 
                 // If the left side is an Add, try to push the subtraction into
-                // only the branch(es) whose bounds overlap the subtracted volume.
+                // only the item(s) whose bounds overlap the subtracted volume.
                 if let DistanceFieldEnum::Add(inner_add) = &left2 {
-                    let left_bounds = inner_add.left.calculate_sphere_bounds();
-                    let right_bounds = inner_add.right.calculate_sphere_bounds();
-                    let left_overlaps = left_bounds.overlaps(&subbounds);
-                    let right_overlaps = right_bounds.overlaps(&subbounds);
+                    let mut overlapping: Vec<Rc<DistanceFieldEnum>> = Vec::new();
+                    let mut non_overlapping: Vec<Rc<DistanceFieldEnum>> = Vec::new();
 
-                    if !left_overlaps && !right_overlaps {
-                        // neither bounds overlaps the subtraction -> subtraction has no effect
-                        return DistanceFieldEnum::Add(inner_add.clone());
-                    } else if !left_overlaps {
-                        // left does not overlap -> move the subtraction into the right only
-                        return Add::new(
-                            inner_add.left.as_ref().clone(),
-                            Subtract::new(inner_add.right.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into()
-                        ).into();
-                    } else if !right_overlaps {
-                        // right does not overlap -> move the subtraction into the left only
-                        return Add::new(
-                            Subtract::new(inner_add.left.as_ref().clone(), sub.subtract.as_ref().clone(), sub.k).into(),
-                            inner_add.right.as_ref().clone()
-                        ).into();
+                    for item in &inner_add.items {
+                        let ib = item.calculate_sphere_bounds();
+                        if ib.overlaps(&subbounds) {
+                            overlapping.push(item.clone());
+                        } else {
+                            non_overlapping.push(item.clone());
+                        }
                     }
-                    // both overlap -> fall through to keep the subtraction on the whole Add
+
+                    if overlapping.is_empty() {
+                        // No overlap -> subtraction has no effect
+                        return DistanceFieldEnum::Add(inner_add.clone());
+                    }
+
+                    if !non_overlapping.is_empty() {
+                        // Some items don't overlap -> push subtraction only into overlapping items
+                        let overlap_sdf: DistanceFieldEnum = if overlapping.len() == 1 {
+                            overlapping[0].as_ref().clone()
+                        } else {
+                            DistanceFieldEnum::Add(Add::from_items(overlapping))
+                        };
+                        let subtracted = Rc::new(
+                            DistanceFieldEnum::Subtract(Subtract::new(
+                                overlap_sdf,
+                                sub.subtract.as_ref().clone(),
+                                sub.k,
+                            ))
+                        );
+                        let mut all_items = non_overlapping;
+                        all_items.push(subtracted);
+                        return DistanceFieldEnum::Add(Add::from_items(all_items));
+                    }
+                    // All overlap -> fall through to keep the subtraction on the whole Add
                 }
 
                 // Try to combine nested subtracts: Subtract(Subtract(A, B), C) → Subtract(A, Add(B, C))
@@ -897,10 +1033,10 @@ impl DistanceFieldEnum {
             },
             DistanceFieldEnum::Add(a) => {
                 if let DistanceFieldEnum::Add(b) = other {
-                    return
-                        (Rc::<DistanceFieldEnum>::ptr_eq(&a.left, &b.left)
-                         && Rc::<DistanceFieldEnum>::ptr_eq(&a.right, &b.right))
-                        || (a.left.equals(&b.left) &&  a.right.equals(&b.right));
+                    if a.items.len() != b.items.len() { return false; }
+                    return a.items.iter().zip(b.items.iter()).all(|(ai, bi)| {
+                        Rc::ptr_eq(ai, bi) || ai.equals(bi)
+                    });
                 }
                 false
             },
@@ -939,8 +1075,10 @@ impl DistanceFieldEnum {
             },
             DistanceFieldEnum::Add(a) => {
                 if let DistanceFieldEnum::Add(b) = other {
-                    return Rc::<DistanceFieldEnum>::ptr_eq(&a.left, &b.left)
-                    &&Rc::<DistanceFieldEnum>::ptr_eq(&a.right, &b.right);
+                    if a.items.len() != b.items.len() { return false; }
+                    return a.items.iter().zip(b.items.iter()).all(|(ai, bi)| {
+                        Rc::ptr_eq(ai, bi)
+                    });
                 }
                 false
             },
@@ -969,60 +1107,11 @@ impl DistanceFieldEnum {
         }
     }
 
-    pub fn build_map(&self, m : &mut HashSet<DistanceFieldEnum>){
-
-        if m.insert(self.clone()){
-            match self {
-                DistanceFieldEnum::Primitive(_) => {},
-                DistanceFieldEnum::Coloring(_, inner) => inner.build_map(m),
-                DistanceFieldEnum::Add(add) => {
-                    add.left.build_map(m);
-                    add.right.build_map(m);
-                },
-                DistanceFieldEnum::Subtract(sub) => {
-                    sub.left.build_map(m);
-                    sub.subtract.build_map(m);
-                },
-                DistanceFieldEnum::Empty => {},
-            }
-        }
-    }
-    pub fn cached(&self, m : &mut HashSet<DistanceFieldEnum>) -> DistanceFieldEnum{
-
-        if m.insert(self.clone()){
-            match self {
-                DistanceFieldEnum::Primitive(_) => {},
-                DistanceFieldEnum::Coloring(_, inner) => inner.build_map(m),
-                DistanceFieldEnum::Add(add) => {
-                    add.left.build_map(m);
-                    add.right.build_map(m);
-                },
-                DistanceFieldEnum::Subtract(sub) => {
-                    sub.left.build_map(m);
-                    sub.subtract.build_map(m);
-                },
-                DistanceFieldEnum::Empty => {},
-            }
-        }
-        return m.get(&self).unwrap().clone();
-    }
-
-    pub fn size(&self) -> u32{
-        match self {
-            DistanceFieldEnum::Primitive(_) => 1,
-            DistanceFieldEnum::Coloring(_, inner) => inner.size(),
-            DistanceFieldEnum::Add(add) => add.size,
-            DistanceFieldEnum::Subtract(sub) => {
-                sub.left.size() + sub.subtract.size()
-            },
-            DistanceFieldEnum::Empty => 1,
-        }
-    }
     pub fn count_primitives(&self) -> u32 {
         match self {
             DistanceFieldEnum::Primitive(_) => 1,
             DistanceFieldEnum::Coloring(_, inner) => inner.count_primitives(),
-            DistanceFieldEnum::Add(add) => add.left.count_primitives() + add.right.count_primitives(),
+            DistanceFieldEnum::Add(add) => add.items.iter().map(|i| i.count_primitives()).sum(),
             DistanceFieldEnum::Subtract(sub) => sub.left.count_primitives(),
             DistanceFieldEnum::Empty => 0,
         }
@@ -1042,11 +1131,12 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Primitive(_) => acc + 1,
             DistanceFieldEnum::Coloring(_, inner) => inner.count_primitives_bounded(limit, acc),
             DistanceFieldEnum::Add(add) => {
-                let left_count = add.left.count_primitives_bounded(limit, acc);
-                if left_count > limit {
-                    return left_count;
+                let mut count = acc;
+                for item in &add.items {
+                    count = item.count_primitives_bounded(limit, count);
+                    if count > limit { return count; }
                 }
-                add.right.count_primitives_bounded(limit, left_count)
+                count
             }
             DistanceFieldEnum::Subtract(sub) => sub.left.count_primitives_bounded(limit, acc),
             DistanceFieldEnum::Empty => acc,
@@ -1071,11 +1161,13 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Primitive(p) => {f.write_str("primitive\n")},
             DistanceFieldEnum::Coloring(_, inner) => 
                 f.write_str("color\n").and(inner.as_ref().print_graph_rec(n + 1, f)),
-            DistanceFieldEnum::Add(add) => 
-            
-                f.write_str("add\n").and(add.left.as_ref().print_graph_rec(n + 1, f))
-                    .and(add.right.as_ref().print_graph_rec(n + 1, f))
-                ,
+            DistanceFieldEnum::Add(add) => {
+                let mut result = f.write_str("add\n");
+                for item in &add.items {
+                    result = result.and(item.as_ref().print_graph_rec(n + 1, f));
+                }
+                result
+            },
             DistanceFieldEnum::Subtract(sub) => 
             {
                 f.write_str("subtract"); 
@@ -1091,36 +1183,8 @@ impl DistanceFieldEnum {
     }
 }
 
-impl Hash for DistanceFieldEnum {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            DistanceFieldEnum::Add(add) => {
-                add.hash.hash(state);
-            },
-            DistanceFieldEnum::Primitive(p) => {
-                state.write_i32(p.hash());
-            }
-            DistanceFieldEnum::Coloring(c,i ) => {
-                state.write_i64(323543265);
-                state.write_i32(c.hash());
-                i.hash(state);
-            }
-            DistanceFieldEnum::Subtract(sub) => {
-              state.write_i64(33543265);
-              sub.left.hash(state);
-              sub.subtract.hash(state);
-              state.write_i32(sub.k.hash2());   
-            },
-            DistanceFieldEnum::Empty => {
-                321321532.hash(state);
-            }
-        }
-        
-    }
-}
-
-struct SdfPrinter{
-    sdf : DistanceFieldEnum
+pub struct SdfPrinter{
+    pub sdf : DistanceFieldEnum
 }
 
 impl Display for SdfPrinter{
@@ -1146,7 +1210,8 @@ impl PartialEq for DistanceFieldEnum{
             },
             DistanceFieldEnum::Add(add) => {
                 if let DistanceFieldEnum::Add(add2) = other {
-                    return add2.hash == add.hash && add.left.eq(&add2.left) && add.right.eq(&add2.right);
+                    return add.items.len() == add2.items.len()
+                        && add.items.iter().zip(add2.items.iter()).all(|(a, b)| a.eq(b));
                 }
                 return false;
             },
@@ -1297,7 +1362,14 @@ impl fmt::Display for DistanceFieldEnum{
                     Primitive::Aabb(aabb) => write!(f, "(AABB {} {})", aabb.center, aabb.radius),
                 }
             },
-            DistanceFieldEnum::Add(add) => write!(f, "({}\n {}\n)", add.left, add.right),
+            DistanceFieldEnum::Add(add) => {
+                write!(f, "(")?;
+                for (i, item) in add.items.iter().enumerate() {
+                    if i > 0 { write!(f, "\n ")?; }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "\n)")
+            },
             DistanceFieldEnum::Coloring(c, inner) => {
                 match c {
                     Coloring::SolidColor(c) => write!(f, "(color: [{}] {})", c, inner),
@@ -1495,7 +1567,7 @@ mod tests {
         println!("{}", SdfPrinter{sdf: sdf.clone()});
         
         if let Some(a) = sdf.first_add() {
-            println!("Balanced? {} {}", a.left.size(),  a.right);
+            println!("Balanced? {}", a.items.iter().map(|i| i.size().to_string()).collect::<Vec<_>>().join(", "));
         }
         let pos = Vec3::new(10.0, 10.0, 0.0);
         println!("optimizing:");
