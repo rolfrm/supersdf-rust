@@ -1,6 +1,5 @@
 
 use image::{Rgba};
-use noise::{NoiseFn, Perlin};
 use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
 use std::collections::hash_map::DefaultHasher;
@@ -9,7 +8,6 @@ use std::f32::consts::SQRT_2;
 use std::fmt::Display;
 use std::{fmt, io};
 use std::hash::{Hash, Hasher};
-//, Simplex, SuperSimplex};
 use std::rc::Rc;
 
 use crate::color::Color;
@@ -321,7 +319,7 @@ impl Gradient {
 
 #[derive(Clone, Debug)]
 pub struct Noise {
-    noise: Rc<Perlin>,
+    //noise: Rc<Perlin>,
     pub(crate) seed: u32,
     pub(crate) c1: Color,
     pub(crate) c2: Color
@@ -347,7 +345,7 @@ impl Noise {
     pub fn new(seed: u32, c1: Color, c2: Color, inner: DistanceFieldEnum) -> DistanceFieldEnum {
         DistanceFieldEnum::Coloring(Coloring::Noise(Noise {
             seed: seed,
-            noise: Rc::new(Perlin::new(seed)),
+            //noise: Rc::new(Perlin::new(seed)),
             c1: c1,
             c2: c2
         }), Rc::new(inner))
@@ -356,7 +354,7 @@ impl Noise {
     fn color(&self, pos: Vec3) -> Color {
         let pos2 = pos * 0.25;
         let pos3 = pos * 4.0;
-        let n1 = self
+        /*let n1 = self
             .noise
             .get([pos.x as f64, pos.y as f64, pos.z as f64]);
         let n2 = self
@@ -366,12 +364,13 @@ impl Noise {
             .noise
             .get([pos3.x as f64, pos3.y as f64, pos3.z as f64]);
         let color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
+        */
         //if color[3] < 255 {
         //    let mut colorbase = self.inner.color(pos);
         //    colorbase.blend(&color);
         //    return colorbase;
         //}
-        return color;
+        return self.c1;
     }
 }
 

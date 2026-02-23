@@ -4,7 +4,6 @@ mod octree2;
 
 use supersdf::color::*;
 use supersdf::sdf::*;
-use supersdf::sdf_compiler;
 use supersdf::vec3::Vec3;
 use supersdf::mat4::{self, Frustum};
 use octree2::{build_octree, OctreeNode as OctreeNode2};
@@ -184,7 +183,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
     
-    let field_size = 8000;
+    let field_size = 1000;
     let mut items = vec![];
     for i in (-field_size..field_size).step_by(10) {
         for j in (-field_size..field_size).step_by(10) {
@@ -605,7 +604,7 @@ fn main() {
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 10000.0) {
-                        sdf = sdf.insert_2(DistanceFieldEnum::sphere(hit_pos, 5.0)
+                        sdf = sdf.insert_2(DistanceFieldEnum::aabb(hit_pos - ray_dir * 5.0, Vec3::new(5.0, 5.0, 5.0))
                                       .colored(Color::rgb(1.0, 1.0, 1.0)));
                         //sdf = sdf.optimize_bounds();
                         sdf_dirty = true;

@@ -2,7 +2,6 @@ pub mod sdf;
 pub mod vec3;
 mod vec2;
 pub mod color;
-pub mod sdf_compiler;
 pub mod mat4;
 
 #[cfg(target_arch = "wasm32")]

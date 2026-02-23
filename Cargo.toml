@@ -29,6 +29,5 @@ glfw = { version = "0.55", optional = true }
 gl = { version = "0.14", optional = true }
 image = "0.24"
 rand = "0.8.5"
-noise = "0.8.2"
 nalgebra = "0.22.1"
 bitflags = "2.4.0"
