@@ -508,6 +508,8 @@ fn main() {
     
     let mut node_instance_lookup = HashMap::new();
     let mut child_node_cache: HashMap<octree2::OctreeNode, [octree2::OctreeNode; 8]> = HashMap::new();
+    let mut child_node_access: HashMap<octree2::OctreeNode, u64> = HashMap::new();
+    let mut cache_generation: u64 = 0;
 
     let voxel_prog = {
         let vs = compile_gl_shader(VOXEL_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
@@ -669,7 +671,7 @@ fn main() {
         // Build VP matrix: FOV matches old shader's focal length of 1.0
         let fovy = 2.0 * (0.5f32).atan();
         let view = mat4::view(cam_pos, dir, up);
-        let proj = mat4::perspective(fovy, aspect, 0.1, 4000.0);
+        let proj = mat4::perspective(fovy, aspect, 0.1, 6000.0);
         let vp = mat4::mul(&proj, &view);
 
         unsafe {
@@ -683,6 +685,7 @@ fn main() {
 
                 let frustum = Frustum::from_vp(&vp);
                 let mut to_render = vec![];
+                cache_generation += 1;
                 {
                     let mut oct_stack: Vec<octree2::OctreeNode> = vec![octree2.clone()];
                     while let Some(node) = oct_stack.pop() {
@@ -694,8 +697,7 @@ fn main() {
                             
                             let dist = (center - cam_pos).length();
                             
-                            let lod = calculate_lod(dist, 8.0 * 2000.0, 10) + 1;
-                            
+                            let lod = calculate_lod(dist, 3.0 * 2000.0, 10) + 1;
                             if size <= 64.0 * (lod as f32) {
                                 let copy2 = node.clone();
                                     
@@ -711,6 +713,7 @@ fn main() {
                             }
                             
                             let children = child_node_cache.entry(node.clone()).or_insert_with(|| node.get_child_nodes());
+                            child_node_access.insert(node.clone(), cache_generation);
                             // Recurse into children front-to-back
                             let near = ((cam_pos.x > center.x) as usize)
                                 | (((cam_pos.y > center.y) as usize) << 1)
@@ -787,7 +790,20 @@ fn main() {
         let now = Instant::now();
         let elapsed = now.duration_since(fps_last_time).as_secs_f64();
         if elapsed >= 1.0 {
-            println!("FPS: {:.1}", fps_frame_count as f64 / elapsed);
+            let recent = child_node_access.values().filter(|&&gen| cache_generation - gen < fps_frame_count as u64).count();
+            println!("FPS: {:.1}  child_cache: {} cached, {} recent", fps_frame_count as f64 / elapsed, child_node_cache.len(), recent);
+
+            // Evict entries not accessed in the last 2 seconds worth of frames
+            let evict_threshold = cache_generation.saturating_sub(fps_frame_count as u64 * 2);
+            child_node_access.retain(|k, &mut gen| {
+                if gen >= evict_threshold {
+                    true
+                } else {
+                    child_node_cache.remove(k);
+                    false
+                }
+            });
+
             fps_frame_count = 0;
             fps_last_time = now;
         }
