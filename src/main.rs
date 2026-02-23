@@ -184,7 +184,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
     
-    let field_size = 1000;
+    let field_size = 8000;
     let mut items = vec![];
     for i in (-field_size..field_size).step_by(10) {
         for j in (-field_size..field_size).step_by(10) {
@@ -507,6 +507,7 @@ fn main() {
     let mut palette_colors =0;
     
     let mut node_instance_lookup = HashMap::new();
+    let mut child_node_cache: HashMap<octree2::OctreeNode, [octree2::OctreeNode; 8]> = HashMap::new();
 
     let voxel_prog = {
         let vs = compile_gl_shader(VOXEL_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
@@ -709,7 +710,7 @@ fn main() {
                                 continue;
                             }
                             
-                            let children = node.get_child_nodes();
+                            let children = child_node_cache.entry(node.clone()).or_insert_with(|| node.get_child_nodes());
                             // Recurse into children front-to-back
                             let near = ((cam_pos.x > center.x) as usize)
                                 | (((cam_pos.y > center.y) as usize) << 1)
