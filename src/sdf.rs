@@ -1,6 +1,6 @@
 
 use image::{Rgba};
-use rand::{thread_rng, Rng};
+use rand::{thread_rng};
 use rand::seq::SliceRandom;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, HashMap};
@@ -596,8 +596,8 @@ impl DistanceFieldEnum {
         (sb.center - p).length() - sb.radius
     }
 
-    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, min_d : f32) -> Rc<DistanceFieldEnum> {
-        
+    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, min_d : f32) -> Option<DistanceFieldEnum> {
+
         let item_min_d = add.items.iter()
             .map(|i| Self::bounds_distance(i, block_center))
             .fold(f32::INFINITY, f32::min);
@@ -605,18 +605,20 @@ impl DistanceFieldEnum {
 
         // Optimize each item, filter out Empty
         let mut optimized: Vec<Rc<DistanceFieldEnum>> = Vec::new();
+        let mut any_changed = false;
         for item in &add.items {
-            let opt = item.optimized_for_block2(block_center, size, new_min_d);
-            if !matches!(opt.as_ref(), DistanceFieldEnum::Empty) {
-                optimized.push(opt);
+            match item.optimized_for_block2(block_center, size, new_min_d) {
+                Some(DistanceFieldEnum::Empty) => { any_changed = true; },
+                Some(opt) => { any_changed = true; optimized.push(Rc::new(opt)); },
+                None => { optimized.push(item.clone()); },
             }
         }
-        
+
         if optimized.is_empty() {
-            return Rc::new(DistanceFieldEnum::Empty);
+            return Some(DistanceFieldEnum::Empty);
         }
         if optimized.len() == 1 {
-            return optimized.into_iter().next().unwrap();
+            return Some(Rc::try_unwrap(optimized.into_iter().next().unwrap()).unwrap_or_else(|rc| rc.as_ref().clone()));
         }
 
         // Distance-based filtering using bounds estimates
@@ -630,14 +632,16 @@ impl DistanceFieldEnum {
             let d = opt_distances[i];
             if d <= closest_d + half * SQRT3 * SQRT_2 {
                 remaining.push(opt.clone());
+            } else {
+                any_changed = true;
             }
         }
 
         if remaining.is_empty() {
-            return Rc::new(DistanceFieldEnum::Empty);
+            return Some(DistanceFieldEnum::Empty);
         }
         if remaining.len() == 1 {
-            return remaining.into_iter().next().unwrap();
+            return Some(Rc::try_unwrap(remaining.into_iter().next().unwrap()).unwrap_or_else(|rc| rc.as_ref().clone()));
         }
 
         let remaining_min = remaining.iter()
@@ -645,7 +649,7 @@ impl DistanceFieldEnum {
             .fold(f32::INFINITY, f32::min);
 
         if remaining_min > min_d + half * SQRT3 * 2.0 {
-            return Rc::new(DistanceFieldEnum::Empty);
+            return Some(DistanceFieldEnum::Empty);
         }
         if remaining_min > half * SQRT3 * 2.0 * 1.5 {
             // Return just the closest by bounds estimate
@@ -658,73 +662,70 @@ impl DistanceFieldEnum {
                     best = item;
                 }
             }
-            return best.clone();
+            return Some(best.as_ref().clone());
         }
 
-        // Check if unchanged
-        if remaining.len() == add.items.len()
-            && remaining.iter().zip(add.items.iter()).all(|(a, b)| a.eq(b))
-        {
-            return Rc::new(DistanceFieldEnum::Add(add.clone()));
+        if !any_changed {
+            return None;
         }
 
-        Rc::new(DistanceFieldEnum::Add(Add::from_items(remaining)))
+        Some(DistanceFieldEnum::Add(Add::from_items(remaining)))
     }
     pub fn optimized_for_block(&self, block_center: Vec3, size: f32) -> Rc<DistanceFieldEnum> {
-        return self.optimized_for_block2(block_center, size, f32::INFINITY);
+        match self.optimized_for_block2(block_center, size, f32::INFINITY) {
+            Some(opt) => Rc::new(opt),
+            None => Rc::new(self.clone()),
+        }
     }
-    
-    pub fn optimized_for_block2(&self, block_center: Vec3, size: f32, min_d :f32) -> Rc<DistanceFieldEnum> {
+
+    pub fn optimized_for_block2(&self, block_center: Vec3, size: f32, min_d :f32) -> Option<DistanceFieldEnum> {
         match self {
             DistanceFieldEnum::Add(add) => {
                 DistanceFieldEnum::optimize_add(add, block_center,size, min_d)
             },
             DistanceFieldEnum::Subtract(sub) => {
                 let optsub = sub.subtract.optimized_for_block2(block_center, size, min_d);
-                
-                let subtract_d = optsub.distance(block_center);
-                let left2 = sub.left.optimized_for_block2(block_center, size, min_d);
+                let optsub_ref = optsub.as_ref().map_or(sub.subtract.as_ref(), |v| v);
+
+                let subtract_d = optsub_ref.distance(block_center);
+                let optleft = sub.left.optimized_for_block2(block_center, size, min_d);
                 if subtract_d > size / 2.0 * SQRT3 * 2.0{
-                    if left2.eq(&sub.left) {
-                        return sub.left.clone();
-                    }
-                    return left2;
+                    return match optleft {
+                        Some(left) => Some(left),
+                        None => None, // left unchanged, subtract irrelevant → self unchanged
+                    };
                 }
-               
-                if left2.eq(&sub.left) && optsub.eq(&sub.subtract) {
-                    return Rc::new(self.clone());
-                }else if left2.eq(&sub.left){
-                    return DistanceFieldEnum::Subtract( Subtract {left : sub.left.clone(),
-                        subtract: optsub, k: sub.k}).into()
-                }else if optsub.eq(&sub.subtract){
-                    return DistanceFieldEnum::Subtract( Subtract {left : left2,
-                        subtract: sub.subtract.clone(), k: sub.k}).into()
+
+                match (&optleft, &optsub) {
+                    (None, None) => None,
+                    (None, Some(s)) => Some(DistanceFieldEnum::Subtract(Subtract {
+                        left: sub.left.clone(), subtract: Rc::new(s.clone()), k: sub.k
+                    })),
+                    (Some(l), None) => Some(DistanceFieldEnum::Subtract(Subtract {
+                        left: Rc::new(l.clone()), subtract: sub.subtract.clone(), k: sub.k
+                    })),
+                    (Some(l), Some(s)) => Some(DistanceFieldEnum::Subtract(Subtract {
+                        left: Rc::new(l.clone()), subtract: Rc::new(s.clone()), k: sub.k
+                    })),
                 }
-                
-                return DistanceFieldEnum::Subtract( Subtract {left : left2,
-                    subtract: optsub, k: sub.k}).into()
-               
             },
             DistanceFieldEnum::Coloring(c, i) => {
-                let opt = i.optimized_for_block2( block_center, size, min_d);
-                if matches!(opt.as_ref(), DistanceFieldEnum::Empty) {
-                    return Rc::new(DistanceFieldEnum::Empty);
+                match i.optimized_for_block2(block_center, size, min_d) {
+                    Some(DistanceFieldEnum::Empty) => Some(DistanceFieldEnum::Empty),
+                    Some(opt) => Some(DistanceFieldEnum::Coloring(c.clone(), Rc::new(opt))),
+                    None => None,
                 }
-                if opt.eq(i) {
-                    return Rc::new(self.clone());
-                }
-                return Rc::new(DistanceFieldEnum::Coloring(c.clone(), opt).into());
             }
-            
+
             _ =>{
                 let sb = self.calculate_sphere_bounds();
                 if !sb.overlaps_aabb(block_center, size / 2.0) && min_d.is_finite() {
-                    return Rc::new(DistanceFieldEnum::Empty);
+                    return Some(DistanceFieldEnum::Empty);
                 }
                 if self.distance(block_center) > min_d + size / 2.0 * SQRT3 * 2.0 {
-                    return Rc::new(DistanceFieldEnum::Empty);
+                    return Some(DistanceFieldEnum::Empty);
                 }
-                return Rc::new(self.clone())
+                None
             }
         }
     }
