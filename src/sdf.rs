@@ -598,19 +598,25 @@ impl DistanceFieldEnum {
 
     pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, min_d : f32) -> Option<DistanceFieldEnum> {
 
-        let item_min_d = add.items.iter()
+        // Compute bounds distances once upfront for all original items
+        let orig_distances: Vec<f32> = add.items.iter()
             .map(|i| Self::bounds_distance(i, block_center))
-            .fold(f32::INFINITY, f32::min);
+            .collect();
+        let item_min_d = orig_distances.iter().copied().fold(f32::INFINITY, f32::min);
         let new_min_d = (f32::min(item_min_d, min_d) * 10.0).floor() / 10.0;
 
-        // Optimize each item, filter out Empty
-        let mut optimized: Vec<Rc<DistanceFieldEnum>> = Vec::new();
+        // Optimize each item, filter out Empty. Track distances alongside.
+        let mut optimized: Vec<(Rc<DistanceFieldEnum>, f32)> = Vec::new();
         let mut any_changed = false;
-        for item in &add.items {
+        for (idx, item) in add.items.iter().enumerate() {
             match item.optimized_for_block2(block_center, size, new_min_d) {
                 Some(DistanceFieldEnum::Empty) => { any_changed = true; },
-                Some(opt) => { any_changed = true; optimized.push(Rc::new(opt)); },
-                None => { optimized.push(item.clone()); },
+                Some(opt) => {
+                    any_changed = true;
+                    let d = Self::bounds_distance(&opt, block_center);
+                    optimized.push((Rc::new(opt), d));
+                },
+                None => { optimized.push((item.clone(), orig_distances[idx])); },
             }
         }
 
@@ -618,20 +624,19 @@ impl DistanceFieldEnum {
             return Some(DistanceFieldEnum::Empty);
         }
         if optimized.len() == 1 {
-            return Some(Rc::try_unwrap(optimized.into_iter().next().unwrap()).unwrap_or_else(|rc| rc.as_ref().clone()));
+            let (rc, _) = optimized.into_iter().next().unwrap();
+            return Some(Rc::try_unwrap(rc).unwrap_or_else(|rc| rc.as_ref().clone()));
         }
 
         // Distance-based filtering using bounds estimates
         let half = size / 2.0;
-        let opt_distances: Vec<f32> = optimized.iter().map(|i| Self::bounds_distance(i, block_center)).collect();
-        let closest_d = opt_distances.iter().copied().fold(f32::INFINITY, f32::min);
+        let closest_d = optimized.iter().map(|(_, d)| *d).fold(f32::INFINITY, f32::min);
 
         // Eliminate items too far from block center relative to closest
-        let mut remaining: Vec<Rc<DistanceFieldEnum>> = Vec::new();
-        for (i, opt) in optimized.iter().enumerate() {
-            let d = opt_distances[i];
-            if d <= closest_d + half * SQRT3 * SQRT_2 {
-                remaining.push(opt.clone());
+        let mut remaining: Vec<(Rc<DistanceFieldEnum>, f32)> = Vec::new();
+        for (opt, d) in &optimized {
+            if *d <= closest_d + half * SQRT3 * 2.0 {
+                remaining.push((opt.clone(), *d));
             } else {
                 any_changed = true;
             }
@@ -641,35 +646,35 @@ impl DistanceFieldEnum {
             return Some(DistanceFieldEnum::Empty);
         }
         if remaining.len() == 1 {
-            return Some(Rc::try_unwrap(remaining.into_iter().next().unwrap()).unwrap_or_else(|rc| rc.as_ref().clone()));
+            let (rc, _) = remaining.into_iter().next().unwrap();
+            return Some(Rc::try_unwrap(rc).unwrap_or_else(|rc| rc.as_ref().clone()));
         }
 
-        let remaining_min = remaining.iter()
-            .map(|i| Self::bounds_distance(i, block_center))
-            .fold(f32::INFINITY, f32::min);
+        let remaining_min = remaining.iter().map(|(_, d)| *d).fold(f32::INFINITY, f32::min);
 
         if remaining_min > min_d + half * SQRT3 * 2.0 {
             return Some(DistanceFieldEnum::Empty);
         }
         if remaining_min > half * SQRT3 * 2.0 * 1.5 {
             // Return just the closest by bounds estimate
-            let mut best = &remaining[0];
-            let mut best_d = Self::bounds_distance(best, block_center);
-            for item in &remaining[1..] {
-                let d = Self::bounds_distance(item, block_center);
-                if d < best_d {
-                    best_d = d;
-                    best = item;
+            let mut best_idx = 0;
+            let mut best_d = remaining[0].1;
+            for (i, (_, d)) in remaining.iter().enumerate().skip(1) {
+                if *d < best_d {
+                    best_d = *d;
+                    best_idx = i;
                 }
             }
-            return Some(best.as_ref().clone());
+            let (rc, _) = remaining.into_iter().nth(best_idx).unwrap();
+            return Some(Rc::try_unwrap(rc).unwrap_or_else(|rc| rc.as_ref().clone()));
         }
 
         if !any_changed {
             return None;
         }
 
-        Some(DistanceFieldEnum::Add(Add::from_items(remaining)))
+        let items: Vec<Rc<DistanceFieldEnum>> = remaining.into_iter().map(|(rc, _)| rc).collect();
+        Some(DistanceFieldEnum::Add(Add::from_items(items)))
     }
     pub fn optimized_for_block(&self, block_center: Vec3, size: f32) -> Rc<DistanceFieldEnum> {
         match self.optimized_for_block2(block_center, size, f32::INFINITY) {
@@ -681,7 +686,16 @@ impl DistanceFieldEnum {
     pub fn optimized_for_block2(&self, block_center: Vec3, size: f32, min_d :f32) -> Option<DistanceFieldEnum> {
         match self {
             DistanceFieldEnum::Add(add) => {
-                DistanceFieldEnum::optimize_add(add, block_center,size, min_d)
+                // If the Add's bounding sphere fits entirely inside the block,
+                // no children can be eliminated — skip the expensive optimization.
+                let half = size / 2.0;
+                let b = &add.bounds;
+                let d = (b.center - block_center).abs();
+                if d.x + b.radius <= half && d.y + b.radius <= half && d.z + b.radius <= half {
+                    println!("early out");
+                    return None;
+                }
+                DistanceFieldEnum::optimize_add(add, block_center, size, min_d)
             },
             DistanceFieldEnum::Subtract(sub) => {
                 let optsub = sub.subtract.optimized_for_block2(block_center, size, min_d);
@@ -690,10 +704,11 @@ impl DistanceFieldEnum {
                 let subtract_d = optsub_ref.distance(block_center);
                 let optleft = sub.left.optimized_for_block2(block_center, size, min_d);
                 if subtract_d > size / 2.0 * SQRT3 * 2.0{
-                    return match optleft {
-                        Some(left) => Some(left),
-                        None => None, // left unchanged, subtract irrelevant → self unchanged
-                    };
+                    // Subtractor is too far away, strip the Subtract wrapper
+                    return Some(match optleft {
+                        Some(left) => left,
+                        None => sub.left.as_ref().clone(),
+                    });
                 }
 
                 match (&optleft, &optsub) {
@@ -754,29 +769,49 @@ impl DistanceFieldEnum {
         match self {
             DistanceFieldEnum::Empty => sdf,
             DistanceFieldEnum::Add (add) =>{
-                
-                let center = sdf.calculate_sphere_bounds().center;
-                
+                let sdf_bounds = sdf.calculate_sphere_bounds();
+                let center = sdf_bounds.center;
+
                 let (index, item) = add.items.iter().enumerate()
                     .min_by_key(|(_, item)| (DistanceFieldEnum::bounds_distance(item, center) * 100.0).floor() as i32)
                     .unwrap();
+
+                let new_bounds = if sdf_bounds.radius.is_finite() {
+                    Sphere::two_sphere_bounds(&add.bounds, &sdf_bounds)
+                } else {
+                    add.bounds.clone()
+                };
+
                 match item.as_ref() {
-                    DistanceFieldEnum::Add(add) => {
-                        let new_add = item.fast_insert(sdf);
+                    DistanceFieldEnum::Add(child_add) => {
+                        let new_child = item.fast_insert(sdf);
+                        println!("sub");
                         let mut new_items = add.items.clone();
-                        new_items[index] = new_add.into();
-                        Add::from_items(new_items).into() 
-                        
+                        new_items[index] = new_child.into();
+                        DistanceFieldEnum::Add(Add { items: new_items, bounds: new_bounds })
                     },
                     _ => {
                         let mut new_items = add.items.clone();
                         new_items.push(sdf.into());
-                        Add::from_items(new_items).into()
+                        println!(" found item: {}", item);
+                        DistanceFieldEnum::Add(Add { items: new_items, bounds: new_bounds })
                     }
                 }
             },
             _ => Add::new(self.clone(), sdf).into(),
-        }   
+        }
+    }
+
+    pub fn print_layout(&self, idx: i32){
+        match self {
+            DistanceFieldEnum::Add (add) => {
+                println!("{} add {}", idx, add.items.len());
+                for item in &(add.items) {
+                    item.print_layout(idx + 1);
+                }
+            },
+            _ => {/*println!(" {} - elem", idx);*/ }
+        }
     }
 
     pub fn insert_3<T: Into<DistanceFieldEnum>>(&self, sdf: T, bounds: &Sphere) -> DistanceFieldEnum {
