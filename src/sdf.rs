@@ -406,6 +406,55 @@ impl Add {
         Add::from_items(vec![left, right])
     }
 
+    pub fn from_items_subdivide(items: Vec<Rc<DistanceFieldEnum>>, n: usize) -> Add {
+        if items.len() <= n * n * n * 2 || n < 2 {
+            return Add::from_items(items);
+        }
+
+        // Compute centers once
+        let centers: Vec<Vec3> = items.iter()
+            .map(|i| i.calculate_sphere_bounds().center)
+            .collect();
+
+        // Compute AABB of all centers
+        let mut aabb_min = centers[0];
+        let mut aabb_max = centers[0];
+        for c in &centers[1..] {
+            aabb_min = vec3_min(aabb_min, *c);
+            aabb_max = vec3_max(aabb_max, *c);
+        }
+
+        let extent = aabb_max - aabb_min;
+        // Add small epsilon to avoid items on the max edge falling out of bounds
+        let cell_size = Vec3::new(
+            if extent.x > 0.0 { extent.x / n as f32 } else { 1.0 },
+            if extent.y > 0.0 { extent.y / n as f32 } else { 1.0 },
+            if extent.z > 0.0 { extent.z / n as f32 } else { 1.0 },
+        );
+
+        // Bin items into grid cells
+        let mut bins: Vec<Vec<Rc<DistanceFieldEnum>>> = vec![Vec::new(); n * n * n];
+        for (idx, item) in items.into_iter().enumerate() {
+            let rel = centers[idx] - aabb_min;
+            let ix = ((rel.x / cell_size.x) as usize).min(n - 1);
+            let iy = ((rel.y / cell_size.y) as usize).min(n - 1);
+            let iz = ((rel.z / cell_size.z) as usize).min(n - 1);
+            bins[ix * n * n + iy * n + iz].push(item);
+        }
+
+        // Build top-level items from non-empty bins
+        let mut top_items: Vec<Rc<DistanceFieldEnum>> = Vec::new();
+        for bin in bins {
+            match bin.len() {
+                0 => {},
+                1 => top_items.push(bin.into_iter().next().unwrap()),
+                _ => top_items.push(Rc::new(DistanceFieldEnum::Add(Add::from_items_subdivide(bin, n)))),
+            }
+        }
+
+        Add::from_items(top_items)
+    }
+
     pub fn from_items(mut items: Vec<Rc<DistanceFieldEnum>>) -> Add {
         // Sort items by bounds center (x, then y, then z) for deterministic ordering
         items.sort_by(|a, b| {
@@ -603,7 +652,10 @@ impl DistanceFieldEnum {
             .map(|i| Self::bounds_distance(i, block_center))
             .collect();
         let item_min_d = orig_distances.iter().copied().fold(f32::INFINITY, f32::min);
-        let new_min_d = (f32::min(item_min_d, min_d) * 10.0).floor() / 10.0;
+        // Clamp to non-negative: a negative bounds_distance just means we're inside the
+        // bounding sphere, not that actual item distance is negative. Using a negative
+        // min_d would over-aggressively eliminate leaves.
+        let new_min_d = (f32::min(item_min_d, min_d).max(0.0) * 10.0).floor() / 10.0;
 
         // Optimize each item, filter out Empty. Track distances alongside.
         let mut optimized: Vec<(Rc<DistanceFieldEnum>, f32)> = Vec::new();
@@ -686,14 +738,11 @@ impl DistanceFieldEnum {
     pub fn optimized_for_block2(&self, block_center: Vec3, size: f32, min_d :f32) -> Option<DistanceFieldEnum> {
         match self {
             DistanceFieldEnum::Add(add) => {
-                // If the Add's bounding sphere fits entirely inside the block,
-                // no children can be eliminated — skip the expensive optimization.
+                // If the Add's bounding sphere doesn't overlap the block at all, eliminate it
                 let half = size / 2.0;
                 let b = &add.bounds;
-                let d = (b.center - block_center).abs();
-                if d.x + b.radius <= half && d.y + b.radius <= half && d.z + b.radius <= half {
-                    println!("early out");
-                    return None;
+                if !b.overlaps_aabb(block_center, half) && min_d.is_finite() {
+                    return Some(DistanceFieldEnum::Empty);
                 }
                 DistanceFieldEnum::optimize_add(add, block_center, size, min_d)
             },

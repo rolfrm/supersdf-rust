@@ -200,7 +200,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
         }
     }
     
-    sdf = Add::from_items(items).into();
+    sdf = Add::from_items_subdivide(items, 4).into();
     let sdf2 = sdf.optimized_for_block(Vec3::ZERO, (field_size as f32) * 2.0);
 
     sdf = (*sdf2).clone();
@@ -604,7 +604,7 @@ fn main() {
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
-                        sdf.print_layout(0);
+                        //sdf.print_layout(0);
                         sdf = sdf.fast_insert(DistanceFieldEnum::aabb(hit_pos - ray_dir * 5.0, Vec3::new(5.0, 5.0, 5.0))
                                       .colored(Color::rgb(1.0, 1.0, 1.0)));
                         //sdf = sdf.optimize_bounds();
