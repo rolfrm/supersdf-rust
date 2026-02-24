@@ -584,7 +584,7 @@ impl DistanceFieldEnum {
             if total_distance > max_dist {
                 return None;
             }
-            if d < 0.001 {
+            if d < 0.01 {
                 return Some((total_distance, mpos));
             }
         }
@@ -747,6 +747,35 @@ impl DistanceFieldEnum {
             },
             _ => Add::new(self.clone(), sdf).into(),
         }
+    }
+    
+    pub fn fast_insert(&self, sdf: DistanceFieldEnum) -> DistanceFieldEnum {
+        match self {
+            DistanceFieldEnum::Empty => sdf,
+            DistanceFieldEnum::Add (add) =>{
+                
+                let center = sdf.calculate_sphere_bounds().center;
+                
+                let (index, item) = add.items.iter().enumerate()
+                    .min_by_key(|(_, item)| (DistanceFieldEnum::bounds_distance(item, center) * 100.0).floor() as i32)
+                    .unwrap();
+                match item.as_ref() {
+                    DistanceFieldEnum::Add(add) => {
+                        let new_add = item.fast_insert(sdf);
+                        let mut new_items = add.items.clone();
+                        new_items[index] = new_add.into();
+                        Add::from_items(new_items).into() 
+                        
+                    },
+                    _ => {
+                        let mut new_items = add.items.clone();
+                        new_items.push(sdf.into());
+                        Add::from_items(new_items).into()
+                    }
+                }
+            },
+            _ => Add::new(self.clone(), sdf).into(),
+        }   
     }
 
     pub fn insert_3<T: Into<DistanceFieldEnum>>(&self, sdf: T, bounds: &Sphere) -> DistanceFieldEnum {
