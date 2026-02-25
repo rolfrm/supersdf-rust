@@ -199,6 +199,12 @@ fn build_initial_scene() -> DistanceFieldEnum {
             items.push(Rc::new(DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color)));
         }
     }
+
+    for i in -30..30 {
+        for j in -30..30 {
+        items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(i as f32 * 5.0, 0.0, j as f32 * 5.0), Vec3::new(1.0, 5.0, 1.0)).colored(Color::rgb(0.0, 0.8, 0.0))));
+   }
+    }
     
     sdf = Add::from_items_subdivide(items, 4).into();
     let sdf2 = sdf.optimized_for_block(Vec3::ZERO, (field_size as f32) * 2.0);
@@ -328,70 +334,67 @@ unsafe fn upload_chunk(tex: u32, layer: u32, chunk: &VoxelChunk) {
 
 fn get_superchunk(node: octree2::OctreeNode, center: Vec3, size: f32, palette: &mut Palette, cube_vbo: GLuint, min_size: f32) -> SuperChunk {
 
+    // First pass: collect all chunks and instance data (no GL calls yet)
+    let mut chunks: Vec<VoxelChunk> = Vec::new();
+    let mut layer: Vec<VoxelInstanceData> = Vec::new();
+
+    let mut stack: Vec<octree2::OctreeNode> = vec![node];
+    while let Some(n) = stack.pop() {
+        match n {
+            octree2::OctreeNode::Empty => {}
+            octree2::OctreeNode::Node { center, size, ref sdf } => {
+                if size <= min_size {
+                    if let Some(chunk) = voxelize_node(center, size, &sdf, palette) {
+                        let half = size / 2.0;
+                        layer.push(VoxelInstanceData {
+                            chunk_pos: [center.x - half, center.y - half, center.z - half],
+                            atlas_layer: chunks.len() as u32,
+                            chunk_size: size,
+                        });
+                        chunks.push(chunk);
+                    }
+                } else {
+                    let children = n.get_child_nodes();
+                    for child in children {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+    }
+
+    let num_layers = chunks.len().max(1) as i32;
+    println!("Layer len: {}", chunks.len());
+
+    // Create texture with exact size needed and upload all chunks in one go
     let mut tex: GLuint = 0;
     unsafe {
         gl::GenTextures(1, &mut tex);
         gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
-        gl::TexStorage3D(gl::TEXTURE_2D_ARRAY, 1, gl::R8, 16, 4, 1024);
+        gl::TexStorage3D(gl::TEXTURE_2D_ARRAY, 1, gl::R8, 16, 4, num_layers);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_BASE_LEVEL, 0);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAX_LEVEL, 0);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-    }
 
-    let mut layer = vec![];
-    
-    {
-        
-        let mut stack: Vec<octree2::OctreeNode> = vec![node];
-        while let Some(n) = stack.pop() {
-            let mut chunk = None;
-            match n {
-                octree2::OctreeNode::Empty => {}
-                octree2::OctreeNode::Node { center, size, ref sdf } => {
-                    if size <= min_size {
-                        
-                        chunk = voxelize_node(center, size, &sdf, palette);
-                        let half = size / 2.0;
-                        layer.push(VoxelInstanceData{
-                            chunk_pos: [center.x - half, center.y - half, center.z - half],
-                            atlas_layer: layer.len() as u32,
-                            chunk_size: size
-                        });
-                        
-                    }else{
-                        let children = n.get_child_nodes();
-                        for child in children {
-                            stack.push(child);
-                        }
-                    }
-                
-                }
-            }
-            if let Some (chunk2) = chunk {
-                unsafe {
-                    upload_chunk(tex, layer.len() as u32 - 1, &chunk2);
-                }
-                if layer.len() > 1024 * 2 {
-                    panic!("Too many layers!");
-                }
-            }
+        for (i, chunk) in chunks.iter().enumerate() {
+            upload_chunk(tex, i as u32, chunk);
         }
     }
-    
+
     let mut sc_vao: GLuint = 0;
     let mut sc_instance_vbo: GLuint = 0;
     unsafe {
         gl::GenVertexArrays(1, &mut sc_vao);
         gl::BindVertexArray(sc_vao);
-        
+
         gl::BindBuffer(gl::ARRAY_BUFFER, cube_vbo);
         gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE,
                                 (3 * std::mem::size_of::<f32>()) as GLsizei, ptr::null());
         gl::EnableVertexAttribArray(0);
-        
+
         gl::GenBuffers(1, &mut sc_instance_vbo);
         gl::BindBuffer(gl::ARRAY_BUFFER, sc_instance_vbo);
         gl::BufferData(
@@ -400,23 +403,22 @@ fn get_superchunk(node: octree2::OctreeNode, center: Vec3, size: f32, palette: &
             layer.as_ptr() as *const _,
             gl::DYNAMIC_DRAW,
             );
-        println!("Layer len: {}", layer.len());
         let stride = std::mem::size_of::<VoxelInstanceData>() as GLsizei;
-        
+
         gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, stride, ptr::null());
         gl::EnableVertexAttribArray(1);
         gl::VertexAttribDivisor(1, 1);
-        
+
         gl::VertexAttribIPointer(2, 1, gl::UNSIGNED_INT, stride,
                                  (3 * std::mem::size_of::<f32>()) as *const _);
         gl::EnableVertexAttribArray(2);
         gl::VertexAttribDivisor(2, 1);
-        
+
         gl::VertexAttribPointer(3, 1, gl::FLOAT, gl::FALSE, stride,
                                 (4 * std::mem::size_of::<f32>()) as *const _);
         gl::EnableVertexAttribArray(3);
         gl::VertexAttribDivisor(3, 1);
-        
+
         gl::BindVertexArray(0);
     }
     SuperChunk {
@@ -576,7 +578,8 @@ fn main() {
                             println!("Reset scene");
                         }
                         Key::B if pressed => {
-                            
+                            node_instance_lookup.clear();
+                            child_node_cache.clear();
                         }
                         _ => {}
                     }
@@ -640,6 +643,7 @@ fn main() {
             sdf_dirty = false;
             let mut reused_count = 0u32;
             octree2 = OctreeNode2::get_node(Vec3::ZERO, 2048.0 * 4.0, &sdf);
+            
         }
 
         // Camera direction from yaw/pitch
