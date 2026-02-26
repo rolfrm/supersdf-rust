@@ -183,7 +183,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
     let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
     
-    let field_size = 8000;
+    let field_size = FIELD_SIZE;
     let mut items = vec![];
     for i in (-field_size..field_size).step_by(10) {
         for j in (-field_size..field_size).step_by(10) {
@@ -192,28 +192,33 @@ fn build_initial_scene() -> DistanceFieldEnum {
             let y = -20.0 + rng.gen_range(-2.0..2.0);
             let r = rng.gen_range(8.0..10.0);
             let color = Color::rgb(
-                (rng.gen_range(0.1..4.0) as f32).floor() * 0.25,
-                (rng.gen_range(0.1..4.0) as f32).floor() * 0.25,
-                (rng.gen_range(0.1..4.0) as f32).floor() * 0.25,
+                (rng.gen_range(0.1..3.0) as f32).floor() * 0.33,
+                (rng.gen_range(0.1..3.0) as f32).floor() * 0.33,
+                (rng.gen_range(0.1..3.0) as f32).floor() * 0.33,
             );
             items.push(Rc::new(DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color)));
         }
     }
 
-    for i in -30..30 {
-        for j in -30..30 {
+    let poles = 2;
+
+    for i in -poles..poles {
+        for j in -poles..poles {
         items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(i as f32 * 5.0, 0.0, j as f32 * 5.0), Vec3::new(1.0, 5.0, 1.0)).colored(Color::rgb(0.0, 0.8, 0.0))));
    }
     }
+
+
+    items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(-40.0, 0.0, 00.0), Vec3::new(0.5, 10.0, 41.0)).colored(Color::rgb(0.5, 0.4, 0.3))));
+    items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.5, 10.0, 41.0)).colored(Color::rgb(0.5, 0.4, 0.3))));
+    items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(0.0, 0.0, 40.0), Vec3::new(40.0, 10.0, 0.25)).colored(Color::rgb(0.5, 0.4, 0.3))));
+    items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(00.0, 0.0, -40.0), Vec3::new(40.0, 10.0, 0.25)).colored(Color::rgb(0.5, 0.4, 0.3))));
+    
     
     sdf = Add::from_items_subdivide(items, 4).into();
-    let sdf2 = sdf.optimized_for_block(Vec3::ZERO, (field_size as f32) * 2.0);
+    let sdf2 = sdf.optimized_for_block(Vec3::ZERO, (field_size as f32) * 4.0);
 
     sdf = (*sdf2).clone();
-    //sdf = sdf.insert_2(DistanceFieldEnum::aabb(Vec3::new(0.0, -2020.0, 0.0), Vec3::new(field_size as f32, 2000.0, field_size as f32)));
-    
-    //sdf = sdf.optimize_bounds();
-    println!("SDF: \n{}", SdfPrinter{sdf: sdf.clone()});
     
     return sdf;
         
@@ -234,8 +239,8 @@ pub struct VoxelInstanceData {
 }
 
 const MAX_LAYERS_PER_TEXTURE: usize = 2048;
-const LOD_FACTOR: f32 = 30.0;   // use coarse LOD when distance > size * LOD_FACTOR
-const MAX_LOD_SIZE: f32 = 128.0; // max branch size to voxelize for LOD
+const ROOT_SIZE : f32= 32000.0;
+const FIELD_SIZE: i32 = 40;
 
 /// Palette: maps u8 index (1-255) to RGB color. Index 0 = air/empty.
 struct Palette {
@@ -262,7 +267,7 @@ impl Palette {
             return idx;
         }
         if self.colors.len() >= 256 {
-            return 1; // palette full, use first color
+            return 128; // palette full, use first color
         }
         let idx = self.colors.len() as u8;
         self.colors.push(rgb);
@@ -288,7 +293,7 @@ fn voxelize_node(center: Vec3, size: f32, sdf: &DistanceFieldEnum, palette: &mut
                     center.z - half + (z as f32 + 0.5) * step,
                 );
                 let d = sdf.distance(pt);
-                if d < step * 0.5 && d > -step {
+                if d < step * 0.5 /*&& d > -step*/ {
                     let color = sdf.color(pt);
                     chunk.voxels[index] = palette.get_or_insert(color);
                     any = true;
@@ -364,7 +369,7 @@ fn get_superchunk(node: octree2::OctreeNode, center: Vec3, size: f32, palette: &
     }
 
     let num_layers = chunks.len().max(1) as i32;
-    println!("Layer len: {}", chunks.len());
+    //println!("Layer len: {}", chunks.len());
 
     // Create texture with exact size needed and upload all chunks in one go
     let mut tex: GLuint = 0;
@@ -504,7 +509,7 @@ fn main() {
     unsafe {
         gl::GenTextures(1, &mut palette_tex);
     }        
-    let mut octree2 = build_octree(&sdf, 2048.0 * 4.0 * 2.0);
+    let mut octree2 = build_octree(&sdf, ROOT_SIZE);
     let mut palette_colors =0;
     
     let mut node_instance_lookup = HashMap::new();
@@ -642,7 +647,7 @@ fn main() {
         if sdf_dirty {
             sdf_dirty = false;
             let mut reused_count = 0u32;
-            octree2 = OctreeNode2::get_node(Vec3::ZERO, 2048.0 * 4.0, &sdf);
+            octree2 = OctreeNode2::get_node(Vec3::ZERO, ROOT_SIZE, &sdf);
             
         }
 
@@ -796,6 +801,7 @@ fn main() {
         if elapsed >= 1.0 {
             let recent = child_node_access.values().filter(|&&gen| cache_generation - gen < fps_frame_count as u64).count();
             println!("FPS: {:.1}  child_cache: {} cached, {} recent", fps_frame_count as f64 / elapsed, child_node_cache.len(), recent);
+            println!("CAMERA: {}", cam_pos);
 
             // Evict entries not accessed in the last 2 seconds worth of frames
             let evict_threshold = cache_generation.saturating_sub(fps_frame_count as u64 * 2);

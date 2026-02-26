@@ -645,23 +645,18 @@ impl DistanceFieldEnum {
         (sb.center - p).length() - sb.radius
     }
 
-    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32, min_d : f32) -> Option<DistanceFieldEnum> {
+    pub fn optimize_add(add: &Add, block_center: Vec3, size: f32) -> Option<DistanceFieldEnum> {
 
         // Compute bounds distances once upfront for all original items
         let orig_distances: Vec<f32> = add.items.iter()
             .map(|i| Self::bounds_distance(i, block_center))
             .collect();
-        let item_min_d = orig_distances.iter().copied().fold(f32::INFINITY, f32::min);
-        // Clamp to non-negative: a negative bounds_distance just means we're inside the
-        // bounding sphere, not that actual item distance is negative. Using a negative
-        // min_d would over-aggressively eliminate leaves.
-        let new_min_d = (f32::min(item_min_d, min_d).max(0.0) * 10.0).floor() / 10.0;
 
         // Optimize each item, filter out Empty. Track distances alongside.
         let mut optimized: Vec<(Rc<DistanceFieldEnum>, f32)> = Vec::new();
         let mut any_changed = false;
         for (idx, item) in add.items.iter().enumerate() {
-            match item.optimized_for_block2(block_center, size, new_min_d) {
+            match item.optimized_for_block2(block_center, size) {
                 Some(DistanceFieldEnum::Empty) => { any_changed = true; },
                 Some(opt) => {
                     any_changed = true;
@@ -704,9 +699,6 @@ impl DistanceFieldEnum {
 
         let remaining_min = remaining.iter().map(|(_, d)| *d).fold(f32::INFINITY, f32::min);
 
-        if remaining_min > min_d + half * SQRT3 * 2.0 {
-            return Some(DistanceFieldEnum::Empty);
-        }
         if remaining_min > half * SQRT3 * 2.0 * 1.5 {
             // Return just the closest by bounds estimate
             let mut best_idx = 0;
@@ -729,30 +721,34 @@ impl DistanceFieldEnum {
         Some(DistanceFieldEnum::Add(Add::from_items(items)))
     }
     pub fn optimized_for_block(&self, block_center: Vec3, size: f32) -> Rc<DistanceFieldEnum> {
-        match self.optimized_for_block2(block_center, size, f32::INFINITY) {
+        match self.optimized_for_block2(block_center, size) {
             Some(opt) => Rc::new(opt),
             None => Rc::new(self.clone()),
         }
     }
 
-    pub fn optimized_for_block2(&self, block_center: Vec3, size: f32, min_d :f32) -> Option<DistanceFieldEnum> {
+    pub fn optimized_for_block2(&self, block_center: Vec3, size: f32) -> Option<DistanceFieldEnum> {
+        let half = size / 2.0;
         match self {
             DistanceFieldEnum::Add(add) => {
                 // If the Add's bounding sphere doesn't overlap the block at all, eliminate it
-                let half = size / 2.0;
                 let b = &add.bounds;
-                if !b.overlaps_aabb(block_center, half) && min_d.is_finite() {
+                if !b.overlaps_aabb(block_center, half) {
                     return Some(DistanceFieldEnum::Empty);
                 }
-                DistanceFieldEnum::optimize_add(add, block_center, size, min_d)
+                if b.contained_in_aabb(block_center, half) {
+                    return None;
+                }
+                
+                DistanceFieldEnum::optimize_add(add, block_center, size)
             },
             DistanceFieldEnum::Subtract(sub) => {
-                let optsub = sub.subtract.optimized_for_block2(block_center, size, min_d);
+                let optsub = sub.subtract.optimized_for_block2(block_center, size);
                 let optsub_ref = optsub.as_ref().map_or(sub.subtract.as_ref(), |v| v);
 
                 let subtract_d = optsub_ref.distance(block_center);
-                let optleft = sub.left.optimized_for_block2(block_center, size, min_d);
-                if subtract_d > size / 2.0 * SQRT3 * 2.0{
+                let optleft = sub.left.optimized_for_block2(block_center, size);
+                if subtract_d > half * SQRT3 * 2.0 {
                     // Subtractor is too far away, strip the Subtract wrapper
                     return Some(match optleft {
                         Some(left) => left,
@@ -774,7 +770,7 @@ impl DistanceFieldEnum {
                 }
             },
             DistanceFieldEnum::Coloring(c, i) => {
-                match i.optimized_for_block2(block_center, size, min_d) {
+                match i.optimized_for_block2(block_center, size) {
                     Some(DistanceFieldEnum::Empty) => Some(DistanceFieldEnum::Empty),
                     Some(opt) => Some(DistanceFieldEnum::Coloring(c.clone(), Rc::new(opt))),
                     None => None,
@@ -783,10 +779,7 @@ impl DistanceFieldEnum {
 
             _ =>{
                 let sb = self.calculate_sphere_bounds();
-                if !sb.overlaps_aabb(block_center, size / 2.0) && min_d.is_finite() {
-                    return Some(DistanceFieldEnum::Empty);
-                }
-                if self.distance(block_center) > min_d + size / 2.0 * SQRT3 * 2.0 {
+                if !sb.overlaps_aabb(block_center, half) {
                     return Some(DistanceFieldEnum::Empty);
                 }
                 None
