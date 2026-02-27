@@ -47,9 +47,9 @@ void main()
 const VOXEL_FRAGMENT_SHADER_SRC: &str = r#"
 #version 330 core
 
-in  vec3 vLocalPos;      // [0,1]^3 on the cube face
-in  vec3 vWorldPos;      // world-space position of this fragment
-flat in vec3 vChunkOrigin; // world-space min corner of this chunk
+in  vec3 vLocalPos;
+in  vec3 vWorldPos;
+flat in vec3 vChunkOrigin;
 flat in uint vAtlasLayer;
 
 // GL_TEXTURE_2D_ARRAY: 16×4×N. Layout: col = x + z*4, row = y, layer = brick index.
@@ -230,7 +230,7 @@ pub struct VoxelInstanceData {
 }
 
 const ROOT_SIZE : f32= 32000.0;
-const FIELD_SIZE: i32 = 40;
+const FIELD_SIZE: i32 = 4000;
 
 /// Palette: maps u8 index (1-255) to RGB color. Index 0 = air/empty.
 struct Palette {
@@ -283,7 +283,7 @@ fn voxelize_node(center: Vec3, size: f32, sdf: &DistanceFieldEnum, palette: &mut
                     center.z - half + (z as f32 + 0.5) * step,
                 );
                 let d = sdf.distance(pt);
-                if d < step * 0.5 /*&& d > -step*/ {
+                if d < step * 0.8 && d > -step * 0.8 {
                     let color = sdf.color(pt);
                     chunk.voxels[index] = palette.get_or_insert(color);
                     any = true;
@@ -303,26 +303,27 @@ struct SuperChunk {
     
 }
 
-unsafe fn upload_chunk(tex: u32, layer: u32, chunk: &VoxelChunk) {
-    // Repack 4×4×4 (z-major) into 16×4 (row=y, col=x+z*4) for a 2D array layer.
-    // Source layout: voxels[z*16 + y*4 + x]
-    let mut buf = [0u8; 64];
-    for z in 0..4usize {
-        for y in 0..4usize {
-            for x in 0..4usize {
-                buf[y * 16 + (x + z * 4)] = chunk.voxels[z * 16 + y * 4 + x];
+/// Repack all chunks from z-major 4×4×4 into 16×4×N and upload in one call.
+unsafe fn upload_chunks(tex: u32, chunks: &[VoxelChunk]) {
+    let n = chunks.len();
+    if n == 0 { return; }
+    let mut buf = vec![0u8; 64 * n];
+    for (layer, chunk) in chunks.iter().enumerate() {
+        let base = layer * 64;
+        for z in 0..4usize {
+            for y in 0..4usize {
+                for x in 0..4usize {
+                    buf[base + y * 16 + (x + z * 4)] = chunk.voxels[z * 16 + y * 4 + x];
+                }
             }
         }
     }
-
     gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
     gl::TexSubImage3D(
-        gl::TEXTURE_2D_ARRAY,
-        0,
-        0, 0, layer as i32, // x_off, y_off, layer index
-        16, 4, 1,           // width=16, height=4, one layer
-        gl::RED,
-        gl::UNSIGNED_BYTE,
+        gl::TEXTURE_2D_ARRAY, 0,
+        0, 0, 0,
+        16, 4, n as i32,
+        gl::RED, gl::UNSIGNED_BYTE,
         buf.as_ptr() as *const _,
     );
 }
@@ -374,9 +375,7 @@ fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette:
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
 
-        for (i, chunk) in chunks.iter().enumerate() {
-            upload_chunk(tex, i as u32, chunk);
-        }
+        upload_chunks(tex, &chunks);
     }
 
     let mut sc_vao: GLuint = 0;
