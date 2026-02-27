@@ -3,10 +3,9 @@ use image::{Rgba};
 use rand::{thread_rng};
 use rand::seq::SliceRandom;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashSet, HashMap};
-use std::f32::consts::SQRT_2;
+use std::collections::HashMap;
 use std::fmt::Display;
-use std::{fmt, io};
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
@@ -122,7 +121,7 @@ pub enum DistanceFieldEnum {
 }
 
 pub trait DistanceField {
-    fn distance(&self, pos: Vec3) -> f32 {
+    fn distance(&self, _pos: Vec3) -> f32 {
         return f32::INFINITY;
     }
 }
@@ -352,8 +351,8 @@ impl Noise {
     }
 
     fn color(&self, pos: Vec3) -> Color {
-        let pos2 = pos * 0.25;
-        let pos3 = pos * 4.0;
+        let _pos2 = pos * 0.25;
+        let _pos3 = pos * 4.0;
         /*let n1 = self
             .noise
             .get([pos.x as f64, pos.y as f64, pos.z as f64]);
@@ -825,7 +824,7 @@ impl DistanceFieldEnum {
                 };
 
                 match item.as_ref() {
-                    DistanceFieldEnum::Add(child_add) => {
+                    DistanceFieldEnum::Add(_child_add) => {
                         let new_child = item.fast_insert(sdf);
                         println!("sub");
                         let mut new_items = add.items.clone();
@@ -856,10 +855,10 @@ impl DistanceFieldEnum {
         }
     }
 
-    pub fn insert_3<T: Into<DistanceFieldEnum>>(&self, sdf: T, bounds: &Sphere) -> DistanceFieldEnum {
+    pub fn insert_3<T: Into<DistanceFieldEnum>>(&self, sdf: T, _bounds: &Sphere) -> DistanceFieldEnum {
         
         match self {
-            DistanceFieldEnum::Add(add) => {
+            DistanceFieldEnum::Add(_add) => {
                 return self.insert(sdf.into());
             },
             _ => self.insert(sdf.into())
@@ -1094,7 +1093,7 @@ impl DistanceFieldEnum {
             DistanceFieldEnum::Add(add) => add.color(pos),
             DistanceFieldEnum::Primitive(_) => Color::RED,
             DistanceFieldEnum::Empty => Color::TRANSPARENT,
-            DistanceFieldEnum::Coloring(c, inner) => c.color(pos),
+            DistanceFieldEnum::Coloring(c, _inner) => c.color(pos),
             DistanceFieldEnum::Subtract(sub) => sub.left.color(pos)
         }
     }
@@ -1257,11 +1256,11 @@ impl DistanceFieldEnum {
     }
 
     fn print_graph_rec (&self, n : i32, f : &mut fmt::Formatter) -> fmt::Result{
-        for i in 0..n {
+        for _i in 0..n {
             print!(" ");
         }
         match self{
-            DistanceFieldEnum::Primitive(p) => {f.write_str("primitive\n")},
+            DistanceFieldEnum::Primitive(_p) => {f.write_str("primitive\n")},
             DistanceFieldEnum::Coloring(_, inner) => 
                 f.write_str("color\n").and(inner.as_ref().print_graph_rec(n + 1, f)),
             DistanceFieldEnum::Add(add) => {
@@ -1476,7 +1475,7 @@ impl fmt::Display for DistanceFieldEnum{
             DistanceFieldEnum::Coloring(c, inner) => {
                 match c {
                     Coloring::SolidColor(c) => write!(f, "(color: [{}] {})", c, inner),
-                    Coloring::Gradient(g) => write!(f, "(gradient: ? {})", inner),
+                    Coloring::Gradient(_g) => write!(f, "(gradient: ? {})", inner),
                     Coloring::Noise(n) => write!(f, "(noise: (n: {}) {})", n, inner)
                 }
             },

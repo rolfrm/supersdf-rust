@@ -10,9 +10,8 @@ use octree2::{build_octree, OctreeNode as OctreeNode2};
 
 use gl::types::*;
 use glfw::{Action, Context, Key, MouseButton};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::CString;
-use std::hash::{Hash, Hasher};
 use std::ptr;
 use std::rc::Rc;
 use std::str;
@@ -337,7 +336,7 @@ unsafe fn upload_chunk(tex: u32, layer: u32, chunk: &VoxelChunk) {
     );
 }
 
-fn get_superchunk(node: octree2::OctreeNode, center: Vec3, size: f32, palette: &mut Palette, cube_vbo: GLuint, min_size: f32) -> SuperChunk {
+fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette: &mut Palette, cube_vbo: GLuint, min_size: f32) -> SuperChunk {
 
     // First pass: collect all chunks and instance data (no GL calls yet)
     let mut chunks: Vec<VoxelChunk> = Vec::new();
@@ -646,7 +645,7 @@ fn main() {
         // Rebuild voxel map if SDF changed
         if sdf_dirty {
             sdf_dirty = false;
-            let mut reused_count = 0u32;
+            let _reused_count = 0u32;
             octree2 = OctreeNode2::get_node(Vec3::ZERO, ROOT_SIZE, &sdf);
             
         }
@@ -779,7 +778,7 @@ fn main() {
                 gl::BindTexture(gl::TEXTURE_1D, palette_tex);
                 gl::ActiveTexture(gl::TEXTURE0);
 
-                for (i, node) in to_render.iter().enumerate() {
+                for (_i, node) in to_render.iter().enumerate() {
                     if let Some(sc) = node_instance_lookup.get(&node) {
                     
                         gl::BindBuffer(gl::ARRAY_BUFFER, sc.instance_vbo);

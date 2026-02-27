@@ -1,4 +1,3 @@
-use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use supersdf::sdf::*;
@@ -43,7 +42,7 @@ impl OctreeNode {
                 children
             }
             OctreeNode::Empty => {
-                std::array::from_fn(|i| { OctreeNode::Empty})
+                std::array::from_fn(|_i| { OctreeNode::Empty})
             }
         }
     }
@@ -90,7 +89,7 @@ impl OctreeNode {
 
 /// Build an octree from scratch for an SDF (no old tree to diff against).
 pub fn build_octree(sdf: &DistanceFieldEnum, root_size: f32) -> OctreeNode {
-    let mut reused_count = 0u32;
+    let _reused_count = 0u32;
 
     OctreeNode::get_node(
         Vec3::new(0.0, 0.0, 0.0),
