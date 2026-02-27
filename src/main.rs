@@ -173,15 +173,9 @@ fn calculate_lod(distance: f32, max_distance: f32, num_lods: u32) -> u32 {
 
 // ---------- Scene ----------
 
-fn build_initial_scene0() -> DistanceFieldEnum {
-    let sdf = DistanceFieldEnum::sphere(Vec3::new(0.0, -20000.0, 0.0), 20000.0).colored(Color::rgb(0.3, 0.3, 0.3));
-    return sdf;
-}
-
 fn build_initial_scene() -> DistanceFieldEnum {
-    let mut sdf: DistanceFieldEnum = DistanceFieldEnum::Empty;
     let mut rng = StdRng::seed_from_u64(42);
-    
+
     let field_size = FIELD_SIZE;
     let mut items = vec![];
     for i in (-field_size..field_size).step_by(10) {
@@ -212,14 +206,12 @@ fn build_initial_scene() -> DistanceFieldEnum {
     items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.5, 10.0, 41.0)).colored(Color::rgb(0.5, 0.4, 0.3))));
     items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(0.0, 0.0, 40.0), Vec3::new(40.0, 10.0, 0.25)).colored(Color::rgb(0.5, 0.4, 0.3))));
     items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(00.0, 0.0, -40.0), Vec3::new(40.0, 10.0, 0.25)).colored(Color::rgb(0.5, 0.4, 0.3))));
-    
-    
-    sdf = Add::from_items_subdivide(items, 4).into();
+
+
+    let sdf: DistanceFieldEnum = Add::from_items_subdivide(items, 4).into();
     let sdf2 = sdf.optimized_for_block(Vec3::ZERO, (field_size as f32) * 4.0);
 
-    sdf = (*sdf2).clone();
-    
-    return sdf;
+    return (*sdf2).clone();
         
 }
 
@@ -237,7 +229,6 @@ pub struct VoxelInstanceData {
     pub chunk_size: f32,       // 4.0 for LOD 0, 8.0 for LOD 1, etc.
 }
 
-const MAX_LAYERS_PER_TEXTURE: usize = 2048;
 const ROOT_SIZE : f32= 32000.0;
 const FIELD_SIZE: i32 = 40;
 
@@ -747,22 +738,19 @@ fn main() {
                 if palette_colors != palette.colors.len() {
                     println!("update palette!");
                     palette_colors = palette.colors.len();
-                    unsafe {
-                    
-                        gl::BindTexture(gl::TEXTURE_1D, palette_tex);
-                        // Pad palette to 256 entries
-                        let mut palette_data = [[0u8; 3]; 256];
-                        for (i, c) in palette.colors.iter().enumerate() {
-                            palette_data[i] = *c;
-                        }
-                        gl::TexImage1D(
-                            gl::TEXTURE_1D, 0, gl::RGB8 as i32,
-                            256, 0, gl::RGB, gl::UNSIGNED_BYTE,
-                            palette_data.as_ptr() as *const _,
-                            );
-                        gl::TexParameteri(gl::TEXTURE_1D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
-                        gl::TexParameteri(gl::TEXTURE_1D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+                    gl::BindTexture(gl::TEXTURE_1D, palette_tex);
+                    // Pad palette to 256 entries
+                    let mut palette_data = [[0u8; 3]; 256];
+                    for (i, c) in palette.colors.iter().enumerate() {
+                        palette_data[i] = *c;
                     }
+                    gl::TexImage1D(
+                        gl::TEXTURE_1D, 0, gl::RGB8 as i32,
+                        256, 0, gl::RGB, gl::UNSIGNED_BYTE,
+                        palette_data.as_ptr() as *const _,
+                        );
+                    gl::TexParameteri(gl::TEXTURE_1D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+                    gl::TexParameteri(gl::TEXTURE_1D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
                 }
 
                 

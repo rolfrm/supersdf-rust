@@ -263,14 +263,6 @@ impl Into<Vec3> for Point3<f32>{
     }
 }
 
-pub fn IntoVector3Array(vecs : Vec<Vec3>) -> Vec<Vector3<f32>> {
-    let mut out = Vec::new();
-    for x in vecs.into_iter() {
-        out.push(x.into());
-    }
-    return out;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

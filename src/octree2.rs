@@ -24,11 +24,6 @@ pub fn octant_offset(i: usize, half: f32) -> Vec3 {
 
 impl OctreeNode {
 
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        matches!(self, Self::Empty)
-    }
-
     pub fn get_child_nodes(&self) -> [OctreeNode; 8] {
         // Subdivide into 8 children
         match self {

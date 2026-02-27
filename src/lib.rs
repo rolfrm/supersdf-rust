@@ -1,6 +1,5 @@
 pub mod sdf;
 pub mod vec3;
-mod vec2;
 pub mod color;
 pub mod mat4;
 

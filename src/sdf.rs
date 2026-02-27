@@ -64,12 +64,6 @@ impl Primitive{
         }
     }
 
-    fn hash(&self) -> i32 {
-        match self {
-            Primitive::Sphere(s) => mix(s.center.hash2(),s.radius.hash2()),
-            Primitive::Aabb(s) => mix(s.center.hash2(), s.radius.hash2()),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1270,10 +1264,10 @@ impl DistanceFieldEnum {
                 }
                 result
             },
-            DistanceFieldEnum::Subtract(sub) => 
+            DistanceFieldEnum::Subtract(sub) =>
             {
-                f.write_str("subtract"); 
-                sub.left.as_ref().print_graph_rec(n + 1, f);
+                f.write_str("subtract")?;
+                sub.left.as_ref().print_graph_rec(n + 1, f)?;
                 sub.subtract.as_ref().print_graph_rec(n + 1, f)
                 },
             DistanceFieldEnum::Empty => fmt::Result::Ok(()),
