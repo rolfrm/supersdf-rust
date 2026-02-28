@@ -1,12 +1,9 @@
 
-use image::{Rgba};
 use rand::{thread_rng};
 use rand::seq::SliceRandom;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::color::Color;
@@ -27,32 +24,10 @@ const BIGPRIME : i64 = 1844674407370955155;
         x as i32
     }
 
-    trait Hash2 {
-        fn hash2(&self) -> i32;
-    }
-
-    impl Hash2 for f32 {
-        fn hash2(&self) -> i32 {
-            (f32::to_bits(*self) as i64).wrapping_mul(BIGPRIME) as i32
-        }
-    }
-
-    impl Hash2 for Vec3{
-        fn hash2(&self) -> i32 {
-            mix(mix(self.x.hash2(), self.y.hash2()), self.z.hash2())
-        }
-    }
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum Primitive{
     Sphere(Sphere),
     Aabb(Aabb)
-}
-
-impl Hash for Primitive {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        core::mem::discriminant(self).hash(state);
-    }
 }
 
 impl Primitive{
@@ -72,17 +47,6 @@ pub enum Coloring{
     Gradient(Gradient),
     Noise(Noise)
 }
-impl Hash2 for Rgba<u8> {
-    fn hash2(&self) -> i32 {
-        mix(mix(self[0] as i32, self[1] as i32), mix(self[2] as i32, self[3] as i32))
-    }
-}
-
-impl Hash2 for Color {
-    fn hash2(&self) -> i32 {
-        self.to_u8_rgba().hash2()
-    }
-}
 
 impl Coloring {
     pub fn from_color(color : Color) -> Coloring {
@@ -93,14 +57,6 @@ impl Coloring {
             Coloring::SolidColor(c) => *c,
             Coloring::Gradient(g) => g.color(p),
             Coloring::Noise(n) => n.color(p),
-        }
-    }
-
-    pub fn hash(&self) -> i32 {
-        match self {
-            Coloring::SolidColor(v) => v.hash2(),
-            Coloring::Gradient(v) => mix(mix(v.c1.hash2(), v.c2.hash2()), mix(v.p1.hash2(), v.p2.hash2())),
-            Coloring::Noise(v) => mix(mix(v.c1.hash2(), v.c2.hash2()), v.seed as i32)
         }
     }
 }
@@ -248,7 +204,7 @@ impl AabbBounds {
     }
 }
 
-#[derive(Clone, PartialEq, Debug, Hash)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Aabb {
     pub(crate) radius: Vec3,
     pub(crate) center: Vec3
@@ -556,45 +512,6 @@ impl DistanceFieldEnum {
     }
     
     
-    pub fn topology_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.hash_topology(&mut hasher);
-        hasher.finish()
-    }
-
-    fn hash_topology<H: Hasher>(&self, state: &mut H) {
-        match self {
-            DistanceFieldEnum::Empty => 0u8.hash(state),
-            DistanceFieldEnum::Primitive(p) => {
-                1u8.hash(state);
-                core::mem::discriminant(p).hash(state);
-            }
-            DistanceFieldEnum::Coloring(c, inner) => {
-                2u8.hash(state);
-                core::mem::discriminant(c).hash(state);
-                inner.hash_topology(state);
-            }
-            DistanceFieldEnum::Add(add) => {
-                3u8.hash(state);
-                // Order-invariant: hash children in sorted order by their topology hash
-                let mut hashes: Vec<u64> = add.items.iter().map(|item| {
-                    let mut h = DefaultHasher::new();
-                    item.hash_topology(&mut h);
-                    h.finish()
-                }).collect();
-                hashes.sort();
-                for h in hashes {
-                    h.hash(state);
-                }
-            }
-            DistanceFieldEnum::Subtract(sub) => {
-                4u8.hash(state);
-                sub.left.hash_topology(state);
-                sub.subtract.hash_topology(state);
-            }
-        }
-    }
-
     pub fn colored(&self, color: Color) -> DistanceFieldEnum {
         DistanceFieldEnum::Coloring(Coloring::SolidColor(color), Rc::new(self.clone()))
     }
