@@ -202,7 +202,9 @@ fn build_initial_scene() -> DistanceFieldEnum {
     }
 
 
-    items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(-40.0, 0.0, 00.0), Vec3::new(0.5, 10.0, 41.0)).colored(Color::rgb(0.5, 0.4, 0.3))));
+    items.push(Rc::new(ColorScale::new(Vec3::new(1.0,0.5,1.0), Noise::new2(132132147, Color::rgb(0.5, 0.3, 0.2), Color::rgb(0.3,0.5,0.7)), DistanceFieldEnum::aabb(Vec3::new(-40.0, 0.0, 00.0), Vec3::new(0.5, 10.0, 41.0)).into())));
+
+                       //.colored(Color::rgb(0.5, 0.4, 0.3))));
     items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.5, 10.0, 41.0)).colored(Color::rgb(0.5, 0.4, 0.3))));
     items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(0.0, 0.0, 40.0), Vec3::new(40.0, 10.0, 0.25)).colored(Color::rgb(0.5, 0.4, 0.3))));
     items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(00.0, 0.0, -40.0), Vec3::new(40.0, 10.0, 0.25)).colored(Color::rgb(0.5, 0.4, 0.3))));
@@ -602,7 +604,7 @@ fn main() {
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
                         //sdf.print_layout(0);
-                        sdf = sdf.fast_insert(DistanceFieldEnum::aabb(hit_pos - ray_dir * 5.0, Vec3::new(5.0, 5.0, 5.0))
+                        sdf = sdf.subtract(DistanceFieldEnum::aabb(hit_pos /*- ray_dir * 5.0*/, Vec3::new(5.0, 5.0, 5.0))
                                       .colored(Color::rgb(1.0, 1.0, 1.0)));
                         //sdf = sdf.optimize_bounds();
                         sdf_dirty = true;

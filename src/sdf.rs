@@ -11,17 +11,20 @@ use crate::vec3::Vec3;
 
 const SQRT3: f32 = 1.73205080757;
 
-const BIGPRIME : i64 = 1844674407370955155;
-
-    pub fn mix(a: i32, b: i32) -> i32{
-        let a = a as i64;
-        let b = b as i64;
-        let mut x = BIGPRIME;
-        for _ in 0..5 {
-            x = x.wrapping_mul(BIGPRIME).wrapping_add(a);
-            x = x.wrapping_mul(BIGPRIME).wrapping_add(b);
-        }
-        x as i32
+pub fn mix(a: i32, b: i32) -> i32{
+        // murmurhash3-style finalizer mixing two inputs
+        let mut h = 0x811c9dc5u32;
+        h = h.wrapping_mul(0x01000193);
+        h ^= a as u32;
+        h = h.wrapping_mul(0x01000193);
+        h ^= b as u32;
+        // avalanche (murmurhash3 fmix32)
+        h ^= h >> 16;
+        h = h.wrapping_mul(0x85ebca6b);
+        h ^= h >> 13;
+        h = h.wrapping_mul(0xc2b2ae35);
+        h ^= h >> 16;
+        h as i32
     }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -45,7 +48,8 @@ impl Primitive{
 pub enum Coloring{
     SolidColor(Color),
     Gradient(Gradient),
-    Noise(Noise)
+    Noise(Noise),
+    ColorScale(ColorScale)
 }
 
 impl Coloring {
@@ -57,6 +61,7 @@ impl Coloring {
             Coloring::SolidColor(c) => *c,
             Coloring::Gradient(g) => g.color(p),
             Coloring::Noise(n) => n.color(p),
+            Coloring::ColorScale(s) => s.color(p),
         }
     }
 }
@@ -299,27 +304,41 @@ impl Noise {
             c2: c2
         }), Rc::new(inner))
     }
-
+    pub fn new2(seed: u32, c1: Color, c2: Color) -> Coloring {
+        Coloring::Noise(Noise {
+            seed: seed,
+            //noise: Rc::new(Perlin::new(seed)),
+            c1: c1,
+            c2: c2
+        })
+    }
     fn color(&self, pos: Vec3) -> Color {
-        let _pos2 = pos * 0.25;
-        let _pos3 = pos * 4.0;
-        /*let n1 = self
-            .noise
-            .get([pos.x as f64, pos.y as f64, pos.z as f64]);
-        let n2 = self
-            .noise
-            .get([pos2.x as f64, pos2.y as f64, pos2.z as f64]);
-        let n3 = self
-            .noise
-            .get([pos3.x as f64, pos3.y as f64, pos3.z as f64]);
-        let color = rgba_interp(self.c1, self.c2, 0.5 * (n1 + n2 + n3) as f32);
-        */
-        //if color[3] < 255 {
-        //    let mut colorbase = self.inner.color(pos);
-        //    colorbase.blend(&color);
-        //    return colorbase;
-        //}
-        return self.c1;
+        let ix = (pos.x * 1.0) as i32;
+        let iy = (pos.y * 1.0) as i32;
+        let iz = (pos.z * 1.0) as i32;
+        let h = mix(mix(ix, iy), mix(iz, self.seed as i32));
+        let t = ((h & 0xFFFF) as f32) / 65535.0;
+        rgba_interp(self.c1, self.c2, t)
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct ColorScale {
+    pub(crate) scale: Vec3,
+    pub(crate) inner: Rc<Coloring>,
+}
+
+impl ColorScale {
+    pub fn new(scale: Vec3, inner_coloring: Coloring, inner_df: Rc<DistanceFieldEnum>) -> DistanceFieldEnum {
+        DistanceFieldEnum::Coloring(Coloring::ColorScale(ColorScale {
+            scale,
+            inner: Rc::new(inner_coloring),
+        }), inner_df)
+    }
+
+    fn color(&self, p: Vec3) -> Color {
+        let scaled = Vec3::new(p.x * self.scale.x, p.y * self.scale.y, p.z * self.scale.z);
+        self.inner.color(scaled)
     }
 }
 
@@ -1359,7 +1378,8 @@ impl fmt::Display for DistanceFieldEnum{
                 match c {
                     Coloring::SolidColor(c) => write!(f, "(color: [{}] {})", c, inner),
                     Coloring::Gradient(_g) => write!(f, "(gradient: ? {})", inner),
-                    Coloring::Noise(n) => write!(f, "(noise: (n: {}) {})", n, inner)
+                    Coloring::Noise(n) => write!(f, "(noise: (n: {}) {})", n, inner),
+                    Coloring::ColorScale(s) => write!(f, "(colorscale: [{} {} {}] {})", s.scale.x, s.scale.y, s.scale.z, inner)
                 }
             },
             DistanceFieldEnum::Subtract(sub) => write!(f, "(subtract {} {})", sub.left, sub.subtract),
