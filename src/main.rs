@@ -171,9 +171,19 @@ fn calculate_lod(distance: f32, max_distance: f32, num_lods: u32) -> u32 {
 }
 
 
+fn build_wood() -> Coloring {
+    Noise::new(91823, Color::rgb(0.55, 0.33, 0.14), Color::rgb(0.36, 0.2, 0.09))
+        .scaled( Vec3::new(3.0, 0.5 * 0.2, 3.0))
+        .mix_with(0.5, Noise::new(4732132,  Color::rgb(0.55, 0.33, 0.14), Color::rgb(0.36, 0.2, 0.09))) 
+}
+
+fn build_box(center: Vec3, size: Vec3, wall_thickness: f32) -> Sdf {
+    let t = Vec3::new(wall_thickness, wall_thickness, wall_thickness);
+    Aabb::new(center, size).subtract(Aabb::new(center, size - t))
+}
 // ---------- Scene ----------
 
-fn build_initial_scene() -> DistanceFieldEnum {
+fn build_initial_scene() -> Sdf {
     let mut rng = StdRng::seed_from_u64(42);
 
     let field_size = FIELD_SIZE;
@@ -189,7 +199,7 @@ fn build_initial_scene() -> DistanceFieldEnum {
                 (rng.gen_range(0.1..3.0) as f32).floor() * 0.33,
                 (rng.gen_range(0.1..3.0) as f32).floor() * 0.33,
             );
-            items.push(Rc::new(DistanceFieldEnum::sphere(Vec3::new(x, y, z), r).colored(color)));
+            items.push(Rc::new(Sdf::sphere(Vec3::new(x, y, z), r).with_color(color)));
         }
     }
 
@@ -197,20 +207,26 @@ fn build_initial_scene() -> DistanceFieldEnum {
 
     for i in -poles..poles {
         for j in -poles..poles {
-        items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(i as f32 * 5.0, 0.0, j as f32 * 5.0), Vec3::new(1.0, 5.0, 1.0)).colored(Color::rgb(0.0, 0.8, 0.0))));
-   }
+            let pole = Sdf::aabb(Vec3::new(i as f32 * 5.0, 0.0, j as f32 * 5.0), Vec3::new(1.0, 5.0, 1.0));
+            // Wood texture: coarse grain noise stretched vertically, with fine detail noise on top
+            let wood = pole.with_coloring(build_wood());
+            items.push(Rc::new(wood));
+        }
     }
 
 
-    items.push(Rc::new(ColorScale::new(Vec3::new(1.0,0.5,1.0), Noise::new2(132132147, Color::rgb(0.5, 0.3, 0.2), Color::rgb(0.3,0.5,0.7)), DistanceFieldEnum::aabb(Vec3::new(-40.0, 0.0, 00.0), Vec3::new(0.5, 10.0, 41.0)).into())));
+    items.push(Rc::new(Sdf::aabb(Vec3::new(-40.0, 0.0, 0.0), Vec3::new(0.5, 10.0, 41.0))
+        .with_coloring(ColorScale::new(Vec3::new(1.0, 0.5, 1.0), Noise::new(132132147, Color::rgb(0.5, 0.3, 0.2), Color::rgb(0.3, 0.5, 0.7))))));
+    items.push(Rc::new(Sdf::aabb(Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.5, 10.0, 41.0)).with_color(Color::rgb(0.5, 0.4, 0.3))));
+    items.push(Rc::new(Sdf::aabb(Vec3::new(0.0, 0.0, 40.0), Vec3::new(40.0, 10.0, 0.25)).with_color(Color::rgb(0.5, 0.4, 0.3))));
+    items.push(Rc::new(Sdf::aabb(Vec3::new(00.0, 0.0, -40.0), Vec3::new(40.0, 10.0, 0.25)).with_color(Color::rgb(0.5, 0.4, 0.3))));
 
-                       //.colored(Color::rgb(0.5, 0.4, 0.3))));
-    items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.5, 10.0, 41.0)).colored(Color::rgb(0.5, 0.4, 0.3))));
-    items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(0.0, 0.0, 40.0), Vec3::new(40.0, 10.0, 0.25)).colored(Color::rgb(0.5, 0.4, 0.3))));
-    items.push(Rc::new(DistanceFieldEnum::aabb(Vec3::new(00.0, 0.0, -40.0), Vec3::new(40.0, 10.0, 0.25)).colored(Color::rgb(0.5, 0.4, 0.3))));
+    items.push(Rc::new(build_box(Vec3::new(-100.0,40.0, 0.0), Vec3::new(50.0, 50.0, 50.0), 2.0)
+                       .with_coloring(build_wood())));
+    
 
-
-    let sdf: DistanceFieldEnum = Add::from_items_subdivide(items, 4).into();
+    let sdf: Sdf = Add::from_items(items).into();//_subdivide(items, 4).into();
+    //let sdf2 = sdf.optimized_for_block(Vec3::ZERO, 1000.0);
     let sdf2 = sdf.optimized_for_block(Vec3::ZERO, (field_size as f32) * 4.0);
 
     return (*sdf2).clone();
@@ -232,7 +248,7 @@ pub struct VoxelInstanceData {
 }
 
 const ROOT_SIZE : f32= 32000.0;
-const FIELD_SIZE: i32 = 4000;
+const FIELD_SIZE: i32 = 2000;
 
 /// Palette: maps u8 index (1-255) to RGB color. Index 0 = air/empty.
 struct Palette {
@@ -270,7 +286,7 @@ impl Palette {
 
 /// Voxelize an octree node (leaf or branch) at 4x4x4 resolution.
 /// Voxel values are palette indices (0=air, 1-255=color).
-fn voxelize_node(center: Vec3, size: f32, sdf: &DistanceFieldEnum, palette: &mut Palette) -> Option<VoxelChunk> {
+fn voxelize_node(center: Vec3, size: f32, sdf: &Sdf, palette: &mut Palette) -> Option<VoxelChunk> {
     let step = size / 4.0;
     let half = size / 2.0;
     let mut chunk = VoxelChunk { voxels: [0; 64] };
@@ -425,6 +441,40 @@ fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette:
     }
 }
 
+unsafe fn create_lowres_fbo(w: u32, h: u32) -> (gl::types::GLuint, gl::types::GLuint, gl::types::GLuint) {
+    let mut fbo = 0u32;
+    let mut color = 0u32;
+    let mut depth = 0u32;
+
+    gl::GenFramebuffers(1, &mut fbo);
+    gl::BindFramebuffer(gl::FRAMEBUFFER, fbo);
+
+    gl::GenTextures(1, &mut color);
+    gl::BindTexture(gl::TEXTURE_2D, color);
+    gl::TexImage2D(gl::TEXTURE_2D, 0, gl::RGBA8 as i32, w as i32, h as i32, 0, gl::RGBA, gl::UNSIGNED_BYTE, std::ptr::null());
+    gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+    gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+    gl::FramebufferTexture2D(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D, color, 0);
+
+    gl::GenRenderbuffers(1, &mut depth);
+    gl::BindRenderbuffer(gl::RENDERBUFFER, depth);
+    gl::RenderbufferStorage(gl::RENDERBUFFER, gl::DEPTH_COMPONENT24, w as i32, h as i32);
+    gl::FramebufferRenderbuffer(gl::FRAMEBUFFER, gl::DEPTH_ATTACHMENT, gl::RENDERBUFFER, depth);
+
+    gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+    (fbo, color, depth)
+}
+
+unsafe fn resize_lowres_fbo(fbo: &mut gl::types::GLuint, color: &mut gl::types::GLuint, depth: &mut gl::types::GLuint, w: u32, h: u32) {
+    gl::DeleteFramebuffers(1, fbo);
+    gl::DeleteTextures(1, color);
+    gl::DeleteRenderbuffers(1, depth);
+    let (f, c, d) = create_lowres_fbo(w, h);
+    *fbo = f;
+    *color = c;
+    *depth = d;
+}
+
 fn main() {
     let mut sdf = build_initial_scene();
     
@@ -450,6 +500,17 @@ fn main() {
     window.make_current();
 
     gl::load_with(|symbol| window.get_proc_address(symbol) as *const _);
+
+    // --- Low-res FBO for pixelated rendering ---
+    const RESOLUTION_SCALE: u32 = 4; // render at 1/3 resolution
+    let (init_w, init_h) = window.get_framebuffer_size();
+    let (mut render_w, mut render_h) = (
+        (init_w as u32 / RESOLUTION_SCALE).max(1),
+        (init_h as u32 / RESOLUTION_SCALE).max(1),
+    );
+    let (mut fbo, mut fbo_color, mut fbo_depth) = unsafe {
+        create_lowres_fbo(render_w, render_h)
+    };
 
     // Unit cube [0,1]^3 - 36 vertices (12 triangles)
     let vertices: [f32; 108] = [
@@ -604,15 +665,17 @@ fn main() {
 
                     if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
                         //sdf.print_layout(0);
-                        sdf = sdf.subtract(DistanceFieldEnum::aabb(hit_pos /*- ray_dir * 5.0*/, Vec3::new(5.0, 5.0, 5.0))
-                                      .colored(Color::rgb(1.0, 1.0, 1.0)));
+                        sdf = sdf.subtract(Sdf::aabb(hit_pos /*- ray_dir * 5.0*/, Vec3::new(5.0, 5.0, 5.0))
+                                      .with_color(Color::rgb(1.0, 1.0, 1.0)));
                         //sdf = sdf.optimize_bounds();
                         sdf_dirty = true;
                         println!("Subtracted sphere at {}", hit_pos);
                     }
                 }
                 glfw::WindowEvent::FramebufferSize(w, h) => unsafe {
-                    gl::Viewport(0, 0, w, h);
+                    render_w = (w as u32 / RESOLUTION_SCALE).max(1);
+                    render_h = (h as u32 / RESOLUTION_SCALE).max(1);
+                    resize_lowres_fbo(&mut fbo, &mut fbo_color, &mut fbo_depth, render_w, render_h);
                 },
                 glfw::WindowEvent::CursorPos(x, y) => {
                     if left_mouse_down {
@@ -675,6 +738,10 @@ fn main() {
         let vp = mat4::mul(&proj, &view);
 
         unsafe {
+            // Bind low-res FBO
+            gl::BindFramebuffer(gl::FRAMEBUFFER, fbo);
+            gl::Viewport(0, 0, render_w as i32, render_h as i32);
+
             // Sky background
             gl::ClearColor(0.25, 0.35, 0.55, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
@@ -737,8 +804,8 @@ fn main() {
             if !to_render.is_empty() {
 
                 if palette_colors != palette.colors.len() {
-                    println!("update palette!");
                     palette_colors = palette.colors.len();
+                    println!("update palette! {}", palette_colors);
                     gl::BindTexture(gl::TEXTURE_1D, palette_tex);
                     // Pad palette to 256 entries
                     let mut palette_data = [[0u8; 3]; 256];
@@ -778,6 +845,17 @@ fn main() {
                 }
                 gl::BindVertexArray(0);
             }
+
+            // Blit low-res FBO to screen with nearest filtering (pixelated)
+            let (fw, fh) = window.get_framebuffer_size();
+            gl::BindFramebuffer(gl::READ_FRAMEBUFFER, fbo);
+            gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, 0);
+            gl::BlitFramebuffer(
+                0, 0, render_w as i32, render_h as i32,
+                0, 0, fw, fh,
+                gl::COLOR_BUFFER_BIT, gl::NEAREST,
+            );
+            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
         }
 
         window.swap_buffers();

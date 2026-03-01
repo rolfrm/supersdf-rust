@@ -8,7 +8,7 @@ pub enum OctreeNode {
     Node {
         center: Vec3,
         size: f32,
-        sdf: Rc<DistanceFieldEnum>,
+        sdf: Rc<Sdf>,
     },
     Empty,
 }
@@ -45,7 +45,7 @@ impl OctreeNode {
     pub fn get_node(
         center: Vec3,
         size: f32,
-        sdf: &DistanceFieldEnum
+        sdf: &Sdf
     ) -> OctreeNode {
         let optimized = sdf.optimized_for_block(center, size);
 
@@ -83,7 +83,7 @@ impl OctreeNode {
 }
 
 /// Build an octree from scratch for an SDF (no old tree to diff against).
-pub fn build_octree(sdf: &DistanceFieldEnum, root_size: f32) -> OctreeNode {
+pub fn build_octree(sdf: &Sdf, root_size: f32) -> OctreeNode {
     let _reused_count = 0u32;
 
     OctreeNode::get_node(
