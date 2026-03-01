@@ -6,7 +6,7 @@ use supersdf::color::*;
 use supersdf::sdf::*;
 use supersdf::vec3::Vec3;
 use supersdf::mat4::{self, Frustum};
-use octree2::{build_octree, OctreeNode as OctreeNode2};
+use octree2::{build_octree, fast_cast_ray, OctreeNode as OctreeNode2};
 
 use gl::types::*;
 use glfw::{Action, Context, Key, MouseButton};
@@ -17,6 +17,25 @@ use std::rc::Rc;
 use std::str;
 use std::time::Instant;
 use rand::{Rng, SeedableRng, rngs::StdRng};
+
+const CURSOR_VERTEX_SHADER_SRC: &str = r#"
+#version 330 core
+layout (location = 0) in vec3 aPos;
+uniform mat4 uViewProj;
+uniform vec3 uCenter;
+uniform float uSize;
+void main() {
+    gl_Position = uViewProj * vec4(uCenter + aPos * uSize, 1.0);
+}
+"#;
+
+const CURSOR_FRAGMENT_SHADER_SRC: &str = r#"
+#version 330 core
+out vec4 FragColor;
+void main() {
+    FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+}
+"#;
 
 const VOXEL_VERTEX_SHADER_SRC: &str = r#"
 #version 330 core
@@ -248,7 +267,7 @@ pub struct VoxelInstanceData {
 }
 
 const ROOT_SIZE : f32= 32000.0;
-const FIELD_SIZE: i32 = 2000;
+const FIELD_SIZE: i32 = 1000;
 
 /// Palette: maps u8 index (1-255) to RGB color. Index 0 = air/empty.
 struct Palette {
@@ -582,6 +601,38 @@ fn main() {
         )
     };
 
+    // Cursor shader + geometry (3-axis crosshair made of 6 lines)
+    let cursor_prog = {
+        let vs = compile_gl_shader(CURSOR_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
+        let fs = compile_gl_shader(CURSOR_FRAGMENT_SHADER_SRC, gl::FRAGMENT_SHADER);
+        let id = link_program(vs, fs);
+        (
+            id,
+            unsafe { gl::GetUniformLocation(id, CString::new("uViewProj").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uCenter").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uSize").unwrap().as_ptr()) },
+        )
+    };
+    let cursor_vao = unsafe {
+        let lines: [f32; 18] = [
+            -1.0, 0.0, 0.0,   1.0, 0.0, 0.0,  // X axis
+             0.0,-1.0, 0.0,   0.0, 1.0, 0.0,  // Y axis
+             0.0, 0.0,-1.0,   0.0, 0.0, 1.0,  // Z axis
+        ];
+        let mut vao = 0u32;
+        let mut vbo = 0u32;
+        gl::GenVertexArrays(1, &mut vao);
+        gl::GenBuffers(1, &mut vbo);
+        gl::BindVertexArray(vao);
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+        gl::BufferData(gl::ARRAY_BUFFER, (lines.len() * 4) as isize, lines.as_ptr() as *const _, gl::STATIC_DRAW);
+        gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, 12, ptr::null());
+        gl::EnableVertexAttribArray(0);
+        gl::BindVertexArray(0);
+        vao
+    };
+    let mut cursor_hit: Option<Vec3> = None;
+
     // Camera state
     let mut cam_pos = Vec3::new(0.0, 0.0, -60.0);
     let mut yaw: f32 = 0.0;
@@ -663,7 +714,7 @@ fn main() {
                     let cam_up2 = cam_dir.cross(cam_right);
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
-                    if let Some((_dist, hit_pos)) = sdf.cast_ray(cam_pos, ray_dir, 1000.0) {
+                    if let Some((_dist, hit_pos)) = fast_cast_ray(&octree2, &mut child_node_cache, cam_pos, ray_dir, 2000.0, 32.0) {
                         //sdf.print_layout(0);
                         sdf = sdf.subtract(Sdf::aabb(hit_pos /*- ray_dir * 5.0*/, Vec3::new(5.0, 5.0, 5.0))
                                       .with_color(Color::rgb(1.0, 1.0, 1.0)));
@@ -736,6 +787,9 @@ fn main() {
         let view = mat4::view(cam_pos, dir, up);
         let proj = mat4::perspective(fovy, aspect, 0.1, 6000.0);
         let vp = mat4::mul(&proj, &view);
+
+        // Cast ray from camera center for cursor
+        cursor_hit = fast_cast_ray(&octree2, &mut child_node_cache, cam_pos, dir, 2000.0, 64.0).map(|(_, hit)| hit);
 
         unsafe {
             // Bind low-res FBO
@@ -843,6 +897,19 @@ fn main() {
                         gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, sc.instances as GLsizei);
                     }
                 }
+                gl::BindVertexArray(0);
+            }
+
+            // Draw 3D cursor crosshair at hit point
+            if let Some(hit) = cursor_hit {
+                gl::UseProgram(cursor_prog.0);
+                gl::UniformMatrix4fv(cursor_prog.1, 1, gl::FALSE, vp.as_ptr());
+                gl::Uniform3f(cursor_prog.2, hit.x, hit.y, hit.z);
+                gl::Uniform1f(cursor_prog.3, 2.0);
+                gl::BindVertexArray(cursor_vao);
+                gl::Disable(gl::DEPTH_TEST);
+                gl::DrawArrays(gl::LINES, 0, 6);
+                gl::Enable(gl::DEPTH_TEST);
                 gl::BindVertexArray(0);
             }
 

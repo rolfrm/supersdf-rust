@@ -587,19 +587,85 @@ impl Sdf {
         Sdf::Subtract(Subtract::new(self.clone(), sdf, 0.1))
     }
 
+/*    pub fn cast_ray2(&self, dir: Vec3, pos: &mut Vec3, total_distance: &mut f32, mut max_dist: f32) -> bool {
+        match self {
+            Sdf::Primitive(x) => {
+                loop {
+                    while max_dist > 0.0 {
+                        let mut d = x.distance(*pos);
+                        if d > max_dist {
+                            d = max_dist;
+                        }
+                        max_dist -= d;
+                        *pos = *pos + dir * d;
+                        *total_distance = *total_distance + d;
+                    }
+                }
+            }
+            Sdf::Add(add) => {
+                add.items.map(|item| item.
+            }
+            _ => {
+
+            }
+        }
+        return true;
+    }*/
+
     pub fn cast_ray(&self, pos: Vec3, dir: Vec3, max_dist: f32) -> Option<(f32, Vec3)> {
         let mut total_distance = 0.0;
         let mut mpos = pos;
-        for _ in 0..512 {
-            let d = self.distance(mpos);
+        let mut opt_sdf = Rc::new(self.clone());
+        let mut opt_center = Vec3::new(f32::NAN, 0.0, 0.0);
+        let opt_size = 64.0;
+        let opt_half = opt_size * 0.5;
 
-            total_distance += d;
-            mpos = mpos + dir * d;
+        for _ in 0..512 {
+            // Re-optimize when ray leaves the current block
+            let block = Vec3::new(
+                (mpos.x / opt_size).floor() * opt_size + opt_half,
+                (mpos.y / opt_size).floor() * opt_size + opt_half,
+                (mpos.z / opt_size).floor() * opt_size + opt_half,
+            );
+            if block.x != opt_center.x || block.y != opt_center.y || block.z != opt_center.z {
+                opt_center = block;
+                opt_sdf = self.optimized_for_block(block, opt_size);
+            }
+
+            if opt_sdf.is_empty() {
+                // No geometry in this block — skip to next block boundary
+                // Find distance to exit the current block along the ray
+                let block_min = opt_center - Vec3::new(opt_half, opt_half, opt_half);
+                let block_max = opt_center + Vec3::new(opt_half, opt_half, opt_half);
+                let mut t_exit = f32::INFINITY;
+                for i in 0..3 {
+                    let (p, d, bmin, bmax) = match i {
+                        0 => (mpos.x, dir.x, block_min.x, block_max.x),
+                        1 => (mpos.y, dir.y, block_min.y, block_max.y),
+                        _ => (mpos.z, dir.z, block_min.z, block_max.z),
+                    };
+                    if d.abs() > 1e-8 {
+                        let t1 = (bmin - p) / d;
+                        let t2 = (bmax - p) / d;
+                        let t_far = f32::max(t1, t2);
+                        if t_far > 0.0 && t_far < t_exit {
+                            t_exit = t_far;
+                        }
+                    }
+                }
+                let step = (t_exit + 0.01).min(max_dist - total_distance);
+                total_distance += step;
+                mpos = mpos + dir * step;
+            } else {
+                let d = opt_sdf.distance(mpos);
+                total_distance += d;
+                mpos = mpos + dir * d;
+                if d < 0.01 {
+                    return Some((total_distance, mpos));
+                }
+            }
             if total_distance > max_dist {
                 return None;
-            }
-            if d < 0.01 {
-                return Some((total_distance, mpos));
             }
         }
         None
