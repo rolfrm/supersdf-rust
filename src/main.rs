@@ -193,7 +193,20 @@ fn calculate_lod(distance: f32, max_distance: f32, num_lods: u32) -> u32 {
 fn build_wood() -> Coloring {
     Noise::new(91823, Color::rgb(0.55, 0.33, 0.14), Color::rgb(0.36, 0.2, 0.09))
         .scaled( Vec3::new(3.0, 0.5 * 0.2, 3.0))
-        .mix_with(0.5, Noise::new(4732132,  Color::rgb(0.55, 0.33, 0.14), Color::rgb(0.36, 0.2, 0.09))) 
+        .mix_with(0.5, Noise::new(4732132,  Color::rgb(0.55, 0.33, 0.14), Color::rgb(0.36, 0.2, 0.09)))
+        
+}
+
+fn build_grass() -> Coloring {
+    Noise::new(38291, Color::rgb(0.2, 0.5, 0.1), Color::rgb(0.15, 0.35, 0.05))
+        .scaled(Vec3::new(2.0, 0.3, 2.0))
+        .mix_with(0.5, Noise::new(7291044, Color::rgb(0.25, 0.55, 0.12), Color::rgb(0.1, 0.3, 0.04)))
+}
+
+fn build_stone() -> Coloring {
+    Noise::new(55012, Color::rgb(0.45, 0.44, 0.42), Color::rgb(0.32, 0.31, 0.30))
+        .scaled(Vec3::new(1.5, 1.5, 1.5))
+        .mix_with(0.5, Noise::new(1198374, Color::rgb(0.5, 0.48, 0.45), Color::rgb(0.28, 0.27, 0.26)))
 }
 
 fn build_box(center: Vec3, size: Vec3, wall_thickness: f32) -> Sdf {
@@ -203,6 +216,55 @@ fn build_box(center: Vec3, size: Vec3, wall_thickness: f32) -> Sdf {
 // ---------- Scene ----------
 
 fn build_initial_scene() -> Sdf {
+    let mut rng = StdRng::seed_from_u64(42);
+
+    let field_size = FIELD_SIZE;
+    let mut items = vec![];
+    
+    let poles = 2;
+
+    {
+        let pole = Sdf::aabb(Vec3::new(0.0, -1010.0, 0.0), Vec3::new(10000.0, 1000.0, 10000.0));
+        let wood = pole.with_coloring(build_grass());
+        items.push(Rc::new(wood));
+    }
+
+    for i in -10..10{
+        let pole = Sdf::sphere(Vec3::new(100.0, -10.0, i as f32 * 100.0), 50.0);
+        let wood = pole.with_coloring(build_stone());
+        items.push(Rc::new(wood));
+    }
+    
+    for i in -poles..poles {
+        for j in -poles..poles {
+            let pole = Sdf::aabb(Vec3::new(i as f32 * 5.0, 0.0, j as f32 * 5.0), Vec3::new(1.0, 5.0, 1.0));
+            // Wood texture: coarse grain noise stretched vertically, with fine detail noise on top
+            let wood = pole.with_coloring(build_wood());
+            items.push(Rc::new(wood));
+        }
+    }
+
+
+    items.push(Rc::new(Sdf::aabb(Vec3::new(-40.0, 0.0, 0.0), Vec3::new(0.5, 10.0, 41.0))
+        .with_coloring(ColorScale::new(Vec3::new(1.0, 0.5, 1.0), Noise::new(132132147, Color::rgb(0.5, 0.3, 0.2), Color::rgb(0.3, 0.5, 0.7))))));
+    items.push(Rc::new(Sdf::aabb(Vec3::new(40.0, 0.0, 0.0), Vec3::new(0.5, 10.0, 41.0)).with_color(Color::rgb(0.5, 0.4, 0.3))));
+    items.push(Rc::new(Sdf::aabb(Vec3::new(0.0, 0.0, 40.0), Vec3::new(40.0, 10.0, 0.25)).with_color(Color::rgb(0.5, 0.4, 0.3))));
+    items.push(Rc::new(Sdf::aabb(Vec3::new(00.0, 0.0, -40.0), Vec3::new(40.0, 10.0, 0.25)).with_color(Color::rgb(0.5, 0.4, 0.3))));
+
+    items.push(Rc::new(build_box(Vec3::new(-100.0,40.0, 0.0), Vec3::new(50.0, 50.0, 50.0), 2.0)
+                       .with_coloring(build_wood())));
+    
+
+    let sdf: Sdf = Add::from_items(items).into();//_subdivide(items, 4).into();
+    //let sdf2 = sdf.optimized_for_block(Vec3::ZERO, 1000.0);
+    let sdf2 = sdf.optimized_for_block(Vec3::ZERO, (field_size as f32) * 4.0);
+
+    return (*sdf2).clone();
+        
+}
+
+
+fn build_initial_scene0() -> Sdf {
     let mut rng = StdRng::seed_from_u64(42);
 
     let field_size = FIELD_SIZE;

@@ -63,7 +63,7 @@ impl Coloring {
             Coloring::Gradient(g) => g.color(p),
             Coloring::Noise(n) => n.color(p),
             Coloring::ColorScale(s) => s.color(p),
-            Coloring::Mix(amount, a, b) => rgba_interp(a.color(p), b.color(p), *amount)
+            Coloring::Mix(amount, a, b) => rgba_interp(a.color(p), b.color(p), (*amount * 8.0).floor() / 8.0)
         }
     }
 
@@ -349,7 +349,7 @@ impl Noise {
         let iy = (pos.y * 1.0) as i32;
         let iz = (pos.z * 1.0) as i32;
         let h = mix(mix(ix, iy), mix(iz, self.seed as i32));
-        let t = ((h & 0xF) as f32) / 15.0;
+        let t = ((h & 0x7) as f32) / 8.0;
         rgba_interp(self.c1, self.c2, t)
     }
 }
