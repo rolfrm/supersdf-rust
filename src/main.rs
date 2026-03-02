@@ -73,6 +73,7 @@ flat in uint vAtlasLayer;
 
 // GL_TEXTURE_2D_ARRAY: 16×4×N. Layout: col = x + z*4, row = y, layer = brick index.
 uniform sampler2DArray uBrickAtlas;
+uniform sampler2DArray uNormalAtlas;
 uniform sampler1D      uPalette;     // 256-entry RGB palette
 uniform vec3           uCameraPos;
 
@@ -85,6 +86,17 @@ float sample_voxel(ivec3 p)
         ivec3(p.x + p.z * 4, p.y, int(vAtlasLayer)),
         0
     ).r;
+}
+
+vec4 sample_normal_ao(ivec3 p)
+{
+    vec4 raw = texelFetch(
+        uNormalAtlas,
+        ivec3(p.x + p.z * 4, p.y, int(vAtlasLayer)),
+        0
+    );
+    vec3 n = normalize(raw.rgb * 2.0 - 1.0);
+    return vec4(n, raw.a); // xyz = normal, w = ao
 }
 
 void main()
@@ -112,6 +124,16 @@ void main()
               // v is palette index / 255.0; recover index and look up color
               int palIdx = int(v * 255.0 + 0.5);
               vec3 color = texelFetch(uPalette, palIdx, 0).rgb;
+
+              // Decode normal + AO (separate channels)
+              vec4 nao = sample_normal_ao(voxel);
+              vec3 normal = nao.xyz;
+              float ao = nao.w;
+              vec3 lightDir = normalize(vec3(0.4, 0.8, 0.3));
+              float ambient = 0.25;
+              float diffuse = max(dot(normal, lightDir), 0.0);
+              color *= (ambient + diffuse * 0.75) * ao;
+
               FragColor = vec4(color, 1.0);
               return;
           }
@@ -251,7 +273,7 @@ fn build_initial_scene() -> Sdf {
     items.push(Rc::new(Sdf::aabb(Vec3::new(0.0, 0.0, 40.0), Vec3::new(40.0, 10.0, 0.25)).with_color(Color::rgb(0.5, 0.4, 0.3))));
     items.push(Rc::new(Sdf::aabb(Vec3::new(00.0, 0.0, -40.0), Vec3::new(40.0, 10.0, 0.25)).with_color(Color::rgb(0.5, 0.4, 0.3))));
 
-    items.push(Rc::new(build_box(Vec3::new(-100.0,40.0, 0.0), Vec3::new(50.0, 50.0, 50.0), 2.0)
+    items.push(Rc::new(build_box(Vec3::new(-100.0,10.0, 0.0), Vec3::new(50.0, 20.0, 50.0), 2.0)
                        .with_coloring(build_wood())));
     
 
@@ -319,6 +341,8 @@ fn build_initial_scene0() -> Sdf {
 pub struct VoxelChunk {
     // 4x4x4 = 64 voxels
     pub voxels: [u8; 64],
+    // Packed normals: 4 bytes (nx, ny, nz, ao) per voxel; xyz mapped from [-1,1] to [0,255], w = ao [0,255]
+    pub normals: [[u8; 4]; 64],
 }
 
 #[repr(C)]
@@ -370,7 +394,8 @@ impl Palette {
 fn voxelize_node(center: Vec3, size: f32, sdf: &Sdf, palette: &mut Palette) -> Option<VoxelChunk> {
     let step = size / 4.0;
     let half = size / 2.0;
-    let mut chunk = VoxelChunk { voxels: [0; 64] };
+    let eps = step * 0.25;
+    let mut chunk = VoxelChunk { voxels: [0; 64], normals: [[128, 128, 128, 255]; 64] };
     let mut any = false;
     let mut index = 0;
     for z in 0..4 {
@@ -385,6 +410,40 @@ fn voxelize_node(center: Vec3, size: f32, sdf: &Sdf, palette: &mut Palette) -> O
                 if d < step * 0.8 && d > -step * 0.8 {
                     let color = sdf.color(pt);
                     chunk.voxels[index] = palette.get_or_insert(color);
+                    let grad = sdf.gradient_at(pt, eps);
+                    let len = grad.length();
+                    let n = if len > 1e-6 { grad * (1.0 / len) } else { Vec3::new(0.0, 1.0, 0.0) };
+
+                    let grad2 = sdf.gradient_at(pt + n * size, eps);
+                    let len2 = grad2.length();
+                    let n2 = if len2 > 1e-6 {grad2 * (1.0 / len2) } else {Vec3::new(0.0, 1.0, 0.0)}; 
+                    let pt2 = pt + n2;
+                    // AO: step along normal at exponential distances, compare
+                    // actual SDF distance to expected (unoccluded) distance
+                    let mut ao = 0.0f32;
+                    let mut t = size;
+                    let num_steps = 0u32;
+                    for _ in 0..num_steps {
+                        let sample_pt = pt2 + n2 * t;
+                        let sample_d = sdf.distance(sample_pt);
+                        ao += (sample_d / t).clamp(0.0, 1.0);
+                        t *= 2.0;
+                    }
+
+                    if num_steps == 0 {
+                        ao = 1.0;
+                    }else{
+                        ao /= num_steps as f32;
+                    }
+                    ao = ao.clamp(0.0, 1.0);
+                    
+                    // Encode normal (xyz) and AO (w) separately for full precision
+                    chunk.normals[index] = [
+                        ((n.x * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8,
+                        ((n.y * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8,
+                        ((n.z * 0.5 + 0.5) * 255.0).clamp(0.0, 255.0) as u8,
+                        (ao * 255.0).clamp(0.0, 255.0) as u8,
+                    ];
                     any = true;
                 }
                 index += 1;
@@ -395,11 +454,12 @@ fn voxelize_node(center: Vec3, size: f32, sdf: &Sdf, palette: &mut Palette) -> O
 }
 
 struct SuperChunk {
-    tex: GLuint,           // GL_TEXTURE_2D_ARRAY, up to MAX_LAYERS_PER_TEXTURE layers
+    tex: GLuint,           // GL_TEXTURE_2D_ARRAY for color palette indices
+    normal_tex: GLuint,    // GL_TEXTURE_2D_ARRAY for packed normals (RGB8)
     vao: GLuint,           // VAO with cube geometry + per-instance data
     instance_vbo: GLuint,  // VBO for VoxelInstanceData
     instances: u32
-    
+
 }
 
 /// Repack all chunks from z-major 4×4×4 into 16×4×N and upload in one call.
@@ -423,6 +483,36 @@ unsafe fn upload_chunks(tex: u32, chunks: &[VoxelChunk]) {
         0, 0, 0,
         16, 4, n as i32,
         gl::RED, gl::UNSIGNED_BYTE,
+        buf.as_ptr() as *const _,
+    );
+}
+
+/// Repack normals from z-major 4×4×4 into 16×4×N (RGBA) and upload.
+unsafe fn upload_normals(tex: u32, chunks: &[VoxelChunk]) {
+    let n = chunks.len();
+    if n == 0 { return; }
+    let mut buf = vec![0u8; 64 * 4 * n]; // 4 bytes per voxel (RGBA)
+    for (layer, chunk) in chunks.iter().enumerate() {
+        let base = layer * 64 * 4;
+        for z in 0..4usize {
+            for y in 0..4usize {
+                for x in 0..4usize {
+                    let src = z * 16 + y * 4 + x;
+                    let dst = (y * 16 + (x + z * 4)) * 4;
+                    buf[base + dst]     = chunk.normals[src][0];
+                    buf[base + dst + 1] = chunk.normals[src][1];
+                    buf[base + dst + 2] = chunk.normals[src][2];
+                    buf[base + dst + 3] = chunk.normals[src][3];
+                }
+            }
+        }
+    }
+    gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
+    gl::TexSubImage3D(
+        gl::TEXTURE_2D_ARRAY, 0,
+        0, 0, 0,
+        16, 4, n as i32,
+        gl::RGBA, gl::UNSIGNED_BYTE,
         buf.as_ptr() as *const _,
     );
 }
@@ -463,6 +553,7 @@ fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette:
 
     // Create texture with exact size needed and upload all chunks in one go
     let mut tex: GLuint = 0;
+    let mut normal_tex: GLuint = 0;
     unsafe {
         gl::GenTextures(1, &mut tex);
         gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
@@ -473,8 +564,18 @@ fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette:
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAX_LEVEL, 0);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-
         upload_chunks(tex, &chunks);
+
+        gl::GenTextures(1, &mut normal_tex);
+        gl::BindTexture(gl::TEXTURE_2D_ARRAY, normal_tex);
+        gl::TexStorage3D(gl::TEXTURE_2D_ARRAY, 1, gl::RGBA8, 16, 4, num_layers);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_BASE_LEVEL, 0);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAX_LEVEL, 0);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+        upload_normals(normal_tex, &chunks);
     }
 
     let mut sc_vao: GLuint = 0;
@@ -515,7 +616,8 @@ fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette:
         gl::BindVertexArray(0);
     }
     SuperChunk {
-        tex: tex,
+        tex,
+        normal_tex,
         vao: sc_vao,
         instance_vbo: sc_instance_vbo,
         instances: layer.len() as u32
@@ -660,6 +762,7 @@ fn main() {
             unsafe { gl::GetUniformLocation(id, CString::new("uBrickAtlas").unwrap().as_ptr()) },
             unsafe { gl::GetUniformLocation(id, CString::new("uCameraPos").unwrap().as_ptr()) },
             unsafe { gl::GetUniformLocation(id, CString::new("uPalette").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uNormalAtlas").unwrap().as_ptr()) },
         )
     };
 
@@ -943,6 +1046,7 @@ fn main() {
                 gl::UniformMatrix4fv(voxel_prog.1, 1, gl::FALSE, vp.as_ptr());
                 gl::Uniform1i(voxel_prog.2, 0);  // brick atlas on texture unit 0
                 gl::Uniform1i(voxel_prog.4, 1);  // palette on texture unit 1
+                gl::Uniform1i(voxel_prog.5, 2);  // normal atlas on texture unit 2
                 gl::Uniform3f(voxel_prog.3, cam_pos.x, cam_pos.y, cam_pos.z);
 
                 // Bind palette texture to unit 1
@@ -952,13 +1056,19 @@ fn main() {
 
                 for (_i, node) in to_render.iter().enumerate() {
                     if let Some(sc) = node_instance_lookup.get(&node) {
-                    
+
                         gl::BindBuffer(gl::ARRAY_BUFFER, sc.instance_vbo);
+                        // Brick atlas on unit 0
+                        gl::ActiveTexture(gl::TEXTURE0);
                         gl::BindTexture(gl::TEXTURE_2D_ARRAY, sc.tex);
+                        // Normal atlas on unit 2
+                        gl::ActiveTexture(gl::TEXTURE2);
+                        gl::BindTexture(gl::TEXTURE_2D_ARRAY, sc.normal_tex);
                         gl::BindVertexArray(sc.vao);
                         gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, sc.instances as GLsizei);
                     }
                 }
+                gl::ActiveTexture(gl::TEXTURE0);
                 gl::BindVertexArray(0);
             }
 

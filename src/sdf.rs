@@ -557,6 +557,18 @@ impl From<Subtract> for Sdf {
 
 impl Sdf {
 
+    /// Compute the SDF gradient at a point using central finite differences.
+    /// Returns the raw (unnormalized) gradient.
+    pub fn gradient_at(&self, p: Vec3, eps: f32) -> Vec3 {
+        let dx = self.distance(p + Vec3::new(eps, 0.0, 0.0))
+               - self.distance(p - Vec3::new(eps, 0.0, 0.0));
+        let dy = self.distance(p + Vec3::new(0.0, eps, 0.0))
+               - self.distance(p - Vec3::new(0.0, eps, 0.0));
+        let dz = self.distance(p + Vec3::new(0.0, 0.0, eps))
+               - self.distance(p - Vec3::new(0.0, 0.0, eps));
+        Vec3::new(dx, dy, dz)
+    }
+
     #[inline]
     pub fn is_empty(&self) -> bool {
         matches!(self, Self::Empty)
