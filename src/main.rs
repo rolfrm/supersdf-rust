@@ -851,7 +851,7 @@ fn main() {
     let mut pitch: f32 = 0.0;
     let mut last_cursor = (0.0f64, 0.0f64);
     let mut first_mouse = true;
-    let move_speed = 1.0f32;
+    let move_speed = 5.0 * 1.0f32;
     let mouse_sensitivity = 0.002f32;
     let mut left_mouse_down = false;
 
@@ -1016,32 +1016,45 @@ fn main() {
 
             gl::BindVertexArray(vao);
 
+                const MAX_CHUNKS_PER_FRAME: u32 = 1;
                 let frustum = Frustum::from_vp(&vp);
                 let mut to_render = vec![];
+                let mut chunks_generated = 0u32;
                 child_cache.generation += 1;
                 {
                     let mut oct_stack: Vec<octree2::OctreeNode> = vec![octree2.clone()];
                     while let Some(node) = oct_stack.pop() {
                     match node {
                         octree2::OctreeNode::Empty => {}
-                        
+
                         octree2::OctreeNode::Node { center, size, ..} => {
                             if frustum.cull_aabb(center, size / 2.0) { continue; }
-                            
+
                             let dist = (center - cam_pos).length();
-                            
+
                             let lod = calculate_lod(dist, 3.0 * 2000.0, 10) + 1;
                             if size <= 64.0 * (lod as f32) {
-                                let copy2 = node.clone();
-                                    
-                                if node_instance_lookup.contains_key(&node) == false {
-                                    let copy = node.clone();
-                                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, (lod * 4) as f32, &mut child_cache);                           
-                                    node_instance_lookup.insert(copy, chunk);
-                                    
+                                if node_instance_lookup.contains_key(&node) {
+                                    to_render.push(node);
+                                    continue;
                                 }
-                                to_render.push(copy2);
-         
+
+                                if chunks_generated < MAX_CHUNKS_PER_FRAME {
+                                    let copy = node.clone();
+                                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, (lod * 4) as f32, &mut child_cache);
+                                    node_instance_lookup.insert(copy.clone(), chunk);
+                                    to_render.push(copy);
+                                    chunks_generated += 1;
+                                    continue;
+                                }
+                                /*
+                                // Budget exhausted — try coarser LOD
+                                let coarse_lod = (lod + 1).max(2);
+                                let coarse_min = (coarse_lod * 4) as f32;
+                                let copy = node.clone();
+                                let chunk = get_superchunk(node, center, size, &mut palette, vbo, coarse_min, &mut child_cache);
+                                node_instance_lookup.insert(copy.clone(), chunk);
+                                to_render.push(copy);*/
                                 continue;
                             }
                             
