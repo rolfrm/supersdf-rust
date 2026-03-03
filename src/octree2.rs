@@ -128,53 +128,68 @@ fn invalidate_cache(
     }
 }
 
-/// Edit a node's SDF at a specific point and size, modifying only the cache.
-/// Walks from `root` down to `target_size`, applies `edit_fn` to the node's SDF,
-/// rebuilds that node, updates the parent's cached children, and invalidates
-/// all descendant cache entries below the edited node.
+/// Edit all nodes at `target_size` whose AABBs overlap the edit region.
+/// `edit_center` and `edit_half` define the AABB of the edit region.
+/// `edit_fn` is applied to each overlapping node's SDF.
 pub fn edit_node(
     root: &OctreeNode,
     child_cache: &mut std::collections::HashMap<OctreeNode, [OctreeNode; 8]>,
-    point: Vec3,
+    edit_center: Vec3,
+    edit_half: Vec3,
     target_size: f32,
-    edit_fn: impl FnOnce(Rc<Sdf>) -> Rc<Sdf>,
+    edit_fn: &dyn Fn(Rc<Sdf>) -> Rc<Sdf>,
 ) {
-    // Walk down, recording (parent_node, octant_index) at each level
-    let mut path: Vec<(OctreeNode, usize)> = Vec::new();
-    let mut current = root.clone();
+    edit_node_recursive(root, child_cache, edit_center, edit_half, target_size, edit_fn, None);
+}
 
-    loop {
-        match &current {
-            OctreeNode::Empty => return,
-            OctreeNode::Node { center, size, sdf } => {
-                if *size <= target_size {
-                    // Found the target node — apply the edit
-                    let new_sdf = edit_fn(sdf.clone());
-                    let new_node = OctreeNode::get_node(*center, *size, &new_sdf);
+fn aabb_overlap(a_center: Vec3, a_half: f32, b_center: Vec3, b_half: Vec3) -> bool {
+    (a_center.x - b_center.x).abs() <= a_half + b_half.x
+        && (a_center.y - b_center.y).abs() <= a_half + b_half.y
+        && (a_center.z - b_center.z).abs() <= a_half + b_half.z
+}
 
-                    // Invalidate all cached descendants of the old node
-                    invalidate_cache(&current, child_cache);
+fn edit_node_recursive(
+    node: &OctreeNode,
+    child_cache: &mut std::collections::HashMap<OctreeNode, [OctreeNode; 8]>,
+    edit_center: Vec3,
+    edit_half: Vec3,
+    target_size: f32,
+    edit_fn: &dyn Fn(Rc<Sdf>) -> Rc<Sdf>,
+    parent_and_octant: Option<(&OctreeNode, usize)>,
+) {
+    match node {
+        OctreeNode::Empty => return,
+        OctreeNode::Node { center, size, sdf } => {
+            if *size <= target_size {
+                // Target level — apply the edit
+                let new_sdf = edit_fn(sdf.clone());
+                let new_node = OctreeNode::get_node(*center, *size, &new_sdf);
 
-                    // Update the parent's cached children to point to the new node
-                    if let Some((parent, octant)) = path.last() {
-                        if let Some(children) = child_cache.get_mut(parent) {
-                            children[*octant] = new_node;
-                        }
+                invalidate_cache(node, child_cache);
+
+                if let Some((parent, octant)) = parent_and_octant {
+                    if let Some(children) = child_cache.get_mut(parent) {
+                        children[octant] = new_node;
                     }
-                    return;
                 }
+                return;
+            }
 
-                let children = child_cache
-                    .entry(current.clone())
-                    .or_insert_with(|| current.get_child_nodes());
+            // Get children, then collect the ones that overlap the edit region
+            let children = child_cache
+                .entry(node.clone())
+                .or_insert_with(|| node.get_child_nodes())
+                .clone();
 
-                let octant = ((point.x >= center.x) as usize)
-                    | (((point.y >= center.y) as usize) << 1)
-                    | (((point.z >= center.z) as usize) << 2);
-
-                let next = children[octant].clone();
-                path.push((current, octant));
-                current = next;
+            for (i, child) in children.iter().enumerate() {
+                if let OctreeNode::Node { center: cc, size: cs, .. } = child {
+                    if aabb_overlap(*cc, cs / 2.0, edit_center, edit_half) {
+                        edit_node_recursive(
+                            child, child_cache, edit_center, edit_half,
+                            target_size, edit_fn, Some((node, i)),
+                        );
+                    }
+                }
             }
         }
     }

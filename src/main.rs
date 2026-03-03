@@ -354,7 +354,7 @@ pub struct VoxelInstanceData {
 }
 
 const ROOT_SIZE : f32= 32000.0;
-const FIELD_SIZE: i32 = 5000;
+const FIELD_SIZE: i32 = 16000;
 
 /// Palette: maps u8 index (1-255) to RGB color. Index 0 = air/empty.
 struct Palette {
@@ -708,7 +708,7 @@ unsafe fn resize_lowres_fbo(fbo: &mut gl::types::GLuint, color: &mut gl::types::
 }
 
 fn main() {
-    let mut sdf = build_initial_scene();
+    let mut sdf = build_initial_scene0();
     
     let mut sdf_dirty = true;
     let mut sphere_count: u32 = 0;
@@ -926,15 +926,17 @@ fn main() {
                     let cam_up2 = cam_dir.cross(cam_right);
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
-                    if let Some((_dist, hit_pos)) = fast_cast_ray(&octree2, &mut child_cache.nodes, cam_pos, ray_dir, 2000.0, 32.0) {
-                        let subtract = Sdf::aabb(hit_pos, Vec3::new(5.0, 5.0, 5.0))
+                    if let Some((_dist, hit_pos)) = fast_cast_ray(&octree2, &mut child_cache.nodes, cam_pos, ray_dir, 2000.0, 16.0) {
+                        let edit_half = Vec3::new(5.0, 5.0, 5.0);
+                        let subtract = Sdf::aabb(hit_pos, edit_half)
                             .with_color(Color::rgb(1.0, 1.0, 1.0));
                         octree2::edit_node(
                             &octree2,
                             &mut child_cache.nodes,
                             hit_pos,
-                            64.0,
-                            |sdf| Rc::new((*sdf).clone().subtract(subtract)),
+                            edit_half,
+                            512.0,
+                            &|sdf: Rc<Sdf>| Rc::new((*sdf).clone().subtract(subtract.clone())),
                         );
                         //node_instance_lookup.clear();
                         println!("Subtracted sphere at {}", hit_pos);
@@ -1052,14 +1054,14 @@ fn main() {
                                     chunks_generated += 1;
                                     continue;
                                 }
-                                /*
+                                
                                 // Budget exhausted — try coarser LOD
                                 let coarse_lod = (lod + 1).max(2);
                                 let coarse_min = (coarse_lod * 4) as f32;
                                 let copy = node.clone();
                                 let chunk = get_superchunk(node, center, size, &mut palette, vbo, coarse_min, &mut child_cache);
                                 node_instance_lookup.insert(copy.clone(), chunk);
-                                to_render.push(copy);*/
+                                to_render.push(copy);
                                 continue;
                             }
                             
