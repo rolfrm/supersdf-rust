@@ -137,7 +137,8 @@ pub fn fast_cast_ray(
             }
         }
     }
-
+    let mut hits: Vec<(OctreeNode, f32)> = Vec::with_capacity(8);
+                    
     while let Some((node, t_enter)) = stack.pop() {
         if t_enter > max_dist {
             continue;
@@ -169,9 +170,8 @@ pub fn fast_cast_ray(
                     let children = child_cache
                         .entry(node.clone())
                         .or_insert_with(|| node.get_child_nodes());
-
+                    hits.clear();
                     // Collect children that the ray hits
-                    let mut hits: Vec<(OctreeNode, f32)> = Vec::with_capacity(8);
                     for child in children.iter() {
                         match child {
                             OctreeNode::Empty => {}
@@ -187,7 +187,7 @@ pub fn fast_cast_ray(
                     }
                     // Sort back-to-front so nearest is popped last (stack order)
                     hits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                    stack.extend(hits);
+                    stack.extend(hits.drain(..));
                 }
             }
         }

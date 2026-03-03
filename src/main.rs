@@ -238,7 +238,7 @@ fn build_box(center: Vec3, size: Vec3, wall_thickness: f32) -> Sdf {
 }
 // ---------- Scene ----------
 
-fn build_initial_scene() -> Sdf {
+fn build_initial_scene0() -> Sdf {
     let mut rng = StdRng::seed_from_u64(42);
 
     let field_size = FIELD_SIZE;
@@ -287,7 +287,7 @@ fn build_initial_scene() -> Sdf {
 }
 
 
-fn build_initial_scene0() -> Sdf {
+fn build_initial_scene() -> Sdf {
     let mut rng = StdRng::seed_from_u64(42);
 
     let field_size = FIELD_SIZE;
@@ -354,7 +354,7 @@ pub struct VoxelInstanceData {
 }
 
 const ROOT_SIZE : f32= 32000.0;
-const FIELD_SIZE: i32 = 1000;
+const FIELD_SIZE: i32 = 5000;
 
 /// Palette: maps u8 index (1-255) to RGB color. Index 0 = air/empty.
 struct Palette {
@@ -467,6 +467,50 @@ struct SuperChunk {
 
 }
 
+struct ChildNodeCache {
+    nodes: HashMap<octree2::OctreeNode, [octree2::OctreeNode; 8]>,
+    access: HashMap<octree2::OctreeNode, u64>,
+    generation: u64,
+}
+
+impl ChildNodeCache {
+    fn new() -> Self {
+        Self {
+            nodes: HashMap::new(),
+            access: HashMap::new(),
+            generation: 0,
+        }
+    }
+
+    fn get(&mut self, node: &octree2::OctreeNode) -> &[octree2::OctreeNode; 8] {
+        self.nodes.entry(node.clone()).or_insert_with(|| node.get_child_nodes())
+    }
+
+    fn get_and_track(&mut self, node: &octree2::OctreeNode) -> &[octree2::OctreeNode; 8] {
+        self.access.insert(node.clone(), self.generation);
+        self.get(node)
+    }
+
+    fn clear(&mut self) {
+        self.nodes.clear();
+        self.access.clear();
+        self.generation = 0;
+    }
+
+    fn evict(&mut self, max_age_frames: u64) {
+        let threshold = self.generation.saturating_sub(max_age_frames);
+        let nodes = &mut self.nodes;
+        self.access.retain(|k, &mut gen| {
+            if gen >= threshold {
+                true
+            } else {
+                nodes.remove(k);
+                false
+            }
+        });
+    }
+}
+
 /// Repack all chunks from z-major 4×4×4 into 16×4×N and upload in one call.
 unsafe fn upload_chunks(tex: u32, chunks: &[VoxelChunk]) {
     let n = chunks.len();
@@ -522,7 +566,7 @@ unsafe fn upload_normals(tex: u32, chunks: &[VoxelChunk]) {
     );
 }
 
-fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette: &mut Palette, cube_vbo: GLuint, min_size: f32) -> SuperChunk {
+fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette: &mut Palette, cube_vbo: GLuint, min_size: f32, cache: &mut ChildNodeCache) -> SuperChunk {
 
     // First pass: collect all chunks and instance data (no GL calls yet)
     let mut chunks: Vec<VoxelChunk> = Vec::new();
@@ -530,23 +574,23 @@ fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette:
 
     let mut stack: Vec<octree2::OctreeNode> = vec![node];
     while let Some(n) = stack.pop() {
-        match n {
+        match &n {
             octree2::OctreeNode::Empty => {}
-            octree2::OctreeNode::Node { center, size, ref sdf } => {
-                if size <= min_size {
-                    if let Some(chunk) = voxelize_node(center, size, &sdf, palette) {
+            octree2::OctreeNode::Node { center, size, sdf } => {
+                if *size <= min_size {
+                    if let Some(chunk) = voxelize_node(*center, *size, sdf, palette) {
                         let half = size / 2.0;
                         layer.push(VoxelInstanceData {
                             chunk_pos: [center.x - half, center.y - half, center.z - half],
                             atlas_layer: chunks.len() as u32,
-                            chunk_size: size,
+                            chunk_size: *size,
                         });
                         chunks.push(chunk);
                     }
                 } else {
-                    let children = n.get_child_nodes();
-                    for child in children {
-                        stack.push(child);
+                    let children = cache.get(&n);
+                    for child in children.iter() {
+                        stack.push(child.clone());
                     }
                 }
             }
@@ -753,9 +797,7 @@ fn main() {
     let mut palette_colors =0;
     
     let mut node_instance_lookup = HashMap::new();
-    let mut child_node_cache: HashMap<octree2::OctreeNode, [octree2::OctreeNode; 8]> = HashMap::new();
-    let mut child_node_access: HashMap<octree2::OctreeNode, u64> = HashMap::new();
-    let mut cache_generation: u64 = 0;
+    let mut child_cache = ChildNodeCache::new();
 
     let voxel_prog = {
         let vs = compile_gl_shader(VOXEL_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
@@ -857,7 +899,7 @@ fn main() {
                         }
                         Key::B if pressed => {
                             node_instance_lookup.clear();
-                            child_node_cache.clear();
+                            child_cache.clear();
                         }
                         _ => {}
                     }
@@ -884,7 +926,7 @@ fn main() {
                     let cam_up2 = cam_dir.cross(cam_right);
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
-                    if let Some((_dist, hit_pos)) = fast_cast_ray(&octree2, &mut child_node_cache, cam_pos, ray_dir, 2000.0, 32.0) {
+                    if let Some((_dist, hit_pos)) = fast_cast_ray(&octree2, &mut child_cache.nodes, cam_pos, ray_dir, 2000.0, 32.0) {
                         //sdf.print_layout(0);
                         sdf = sdf.subtract(Sdf::aabb(hit_pos /*- ray_dir * 5.0*/, Vec3::new(5.0, 5.0, 5.0))
                                       .with_color(Color::rgb(1.0, 1.0, 1.0)));
@@ -959,7 +1001,7 @@ fn main() {
         let vp = mat4::mul(&proj, &view);
 
         // Cast ray from camera center for cursor
-        cursor_hit = fast_cast_ray(&octree2, &mut child_node_cache, cam_pos, dir, 2000.0, 64.0).map(|(_, hit)| hit);
+        cursor_hit = fast_cast_ray(&octree2, &mut child_cache.nodes, cam_pos, dir, 2000.0, 64.0).map(|(_, hit)| hit);
 
         unsafe {
             // Bind low-res FBO
@@ -976,7 +1018,7 @@ fn main() {
 
                 let frustum = Frustum::from_vp(&vp);
                 let mut to_render = vec![];
-                cache_generation += 1;
+                child_cache.generation += 1;
                 {
                     let mut oct_stack: Vec<octree2::OctreeNode> = vec![octree2.clone()];
                     while let Some(node) = oct_stack.pop() {
@@ -994,7 +1036,7 @@ fn main() {
                                     
                                 if node_instance_lookup.contains_key(&node) == false {
                                     let copy = node.clone();
-                                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, (lod * 4) as f32);                           
+                                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, (lod * 4) as f32, &mut child_cache);                           
                                     node_instance_lookup.insert(copy, chunk);
                                     
                                 }
@@ -1003,8 +1045,7 @@ fn main() {
                                 continue;
                             }
                             
-                            let children = child_node_cache.entry(node.clone()).or_insert_with(|| node.get_child_nodes());
-                            child_node_access.insert(node.clone(), cache_generation);
+                            let children = child_cache.get_and_track(&node);
                             // Recurse into children front-to-back
                             let near = ((cam_pos.x > center.x) as usize)
                                 | (((cam_pos.y > center.y) as usize) << 1)
@@ -1109,20 +1150,12 @@ fn main() {
         let now = Instant::now();
         let elapsed = now.duration_since(fps_last_time).as_secs_f64();
         if elapsed >= 1.0 {
-            let recent = child_node_access.values().filter(|&&gen| cache_generation - gen < fps_frame_count as u64).count();
-            println!("FPS: {:.1}  child_cache: {} cached, {} recent", fps_frame_count as f64 / elapsed, child_node_cache.len(), recent);
+            let recent = child_cache.access.values().filter(|&&gen| child_cache.generation - gen < fps_frame_count as u64).count();
+            println!("FPS: {:.1}  child_cache: {} cached, {} recent", fps_frame_count as f64 / elapsed, child_cache.nodes.len(), recent);
             println!("CAMERA: {}", cam_pos);
 
             // Evict entries not accessed in the last 2 seconds worth of frames
-            let evict_threshold = cache_generation.saturating_sub(fps_frame_count as u64 * 2);
-            child_node_access.retain(|k, &mut gen| {
-                if gen >= evict_threshold {
-                    true
-                } else {
-                    child_node_cache.remove(k);
-                    false
-                }
-            });
+            child_cache.evict(fps_frame_count as u64 * 2);
 
             fps_frame_count = 0;
             fps_last_time = now;
