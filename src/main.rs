@@ -120,9 +120,10 @@ void main()
               break;
 
           float v = sample_voxel(voxel);
-          if (v > 0.001) {
+          if (v > 0.000001) {
               // v is palette index / 255.0; recover index and look up color
-              int palIdx = int(v * 255.0 + 0.5);
+              int palIdx = int(v * 65535.0 + 0.5);
+              if(palIdx == 1) discard;
               vec3 color = texelFetch(uPalette, palIdx, 0).rgb;
 
               // Decode normal + AO (separate channels)
@@ -340,7 +341,7 @@ fn build_initial_scene0() -> Sdf {
 #[derive(Clone)]
 pub struct VoxelChunk {
     // 4x4x4 = 64 voxels
-    pub voxels: [u8; 64],
+    pub voxels: [u16; 64],
     // Packed normals: 4 bytes (nx, ny, nz, ao) per voxel; xyz mapped from [-1,1] to [0,255], w = ao [0,255]
     pub normals: [[u8; 4]; 64],
 }
@@ -358,19 +359,20 @@ const FIELD_SIZE: i32 = 1000;
 /// Palette: maps u8 index (1-255) to RGB color. Index 0 = air/empty.
 struct Palette {
     colors: Vec<[u8; 3]>,              // palette entries (index 0 = unused placeholder)
-    lookup: HashMap<[u8; 3], u8>,       // RGB -> palette index for dedup
+    lookup: HashMap<[u8; 3], u16>,       // RGB -> palette index for dedup
 }
 
 impl Palette {
     fn new() -> Self {
         Palette {
-            colors: vec![[0, 0, 0]], // index 0 = air
+            colors: vec![[0, 0, 0],
+                         [0,0,0]], // index 0 = air, // index 1 = not visible
             lookup: HashMap::new(),
         }
     }
 
     /// Get or insert a color, returning its palette index (1-255). Returns 1 if full.
-    fn get_or_insert(&mut self, color: Color) -> u8 {
+    fn get_or_insert(&mut self, color: Color) -> u16 {
         let rgb = [
             (color.r.clamp(0.0, 1.0) * 255.0) as u8,
             (color.g.clamp(0.0, 1.0) * 255.0) as u8,
@@ -379,10 +381,10 @@ impl Palette {
         if let Some(&idx) = self.lookup.get(&rgb) {
             return idx;
         }
-        if self.colors.len() >= 256 {
+        if self.colors.len() >= 256 * 256 {
             return 128; // palette full, use first color
         }
-        let idx = self.colors.len() as u8;
+        let idx = self.colors.len() as u16;
         self.colors.push(rgb);
         self.lookup.insert(rgb, idx);
         idx
@@ -407,7 +409,10 @@ fn voxelize_node(center: Vec3, size: f32, sdf: &Sdf, palette: &mut Palette) -> O
                     center.z - half + (z as f32 + 0.5) * step,
                 );
                 let d = sdf.distance(pt);
-                if d < step * 0.8 && d > -step * 0.8 {
+                if d < -step * 0.8 {
+                    chunk.voxels[index] = 1;
+                }
+                else if d < step * 0.8 {
                     let color = sdf.color(pt);
                     chunk.voxels[index] = palette.get_or_insert(color);
                     let grad = sdf.gradient_at(pt, eps);
@@ -466,7 +471,7 @@ struct SuperChunk {
 unsafe fn upload_chunks(tex: u32, chunks: &[VoxelChunk]) {
     let n = chunks.len();
     if n == 0 { return; }
-    let mut buf = vec![0u8; 64 * n];
+    let mut buf = vec![0u16; 64 * n];
     for (layer, chunk) in chunks.iter().enumerate() {
         let base = layer * 64;
         for z in 0..4usize {
@@ -482,7 +487,7 @@ unsafe fn upload_chunks(tex: u32, chunks: &[VoxelChunk]) {
         gl::TEXTURE_2D_ARRAY, 0,
         0, 0, 0,
         16, 4, n as i32,
-        gl::RED, gl::UNSIGNED_BYTE,
+        gl::RED, gl::UNSIGNED_SHORT,
         buf.as_ptr() as *const _,
     );
 }
@@ -557,7 +562,7 @@ fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette:
     unsafe {
         gl::GenTextures(1, &mut tex);
         gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
-        gl::TexStorage3D(gl::TEXTURE_2D_ARRAY, 1, gl::R8, 16, 4, num_layers);
+        gl::TexStorage3D(gl::TEXTURE_2D_ARRAY, 1, gl::R16, 16, 4, num_layers);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
         gl::TexParameteri(gl::TEXTURE_2D_ARRAY, gl::TEXTURE_BASE_LEVEL, 0);
