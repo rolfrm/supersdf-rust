@@ -6,7 +6,7 @@ use supersdf::color::*;
 use supersdf::sdf::*;
 use supersdf::vec3::Vec3;
 use supersdf::mat4::{self, Frustum};
-use octree2::{build_octree, fast_cast_ray, OctreeNode as OctreeNode2};
+use octree2::{build_octree, fast_cast_ray, OctreeNode, edit_node};
 
 use gl::types::*;
 use glfw::{Action, Context, Key, MouseButton};
@@ -927,11 +927,16 @@ fn main() {
                     let ray_dir = (cam_right * ux + cam_up2 * uy + cam_dir).normalize();
 
                     if let Some((_dist, hit_pos)) = fast_cast_ray(&octree2, &mut child_cache.nodes, cam_pos, ray_dir, 2000.0, 32.0) {
-                        //sdf.print_layout(0);
-                        sdf = sdf.subtract(Sdf::aabb(hit_pos /*- ray_dir * 5.0*/, Vec3::new(5.0, 5.0, 5.0))
-                                      .with_color(Color::rgb(1.0, 1.0, 1.0)));
-                        //sdf = sdf.optimize_bounds();
-                        sdf_dirty = true;
+                        let subtract = Sdf::aabb(hit_pos, Vec3::new(5.0, 5.0, 5.0))
+                            .with_color(Color::rgb(1.0, 1.0, 1.0));
+                        octree2::edit_node(
+                            &octree2,
+                            &mut child_cache.nodes,
+                            hit_pos,
+                            64.0,
+                            |sdf| Rc::new((*sdf).clone().subtract(subtract)),
+                        );
+                        //node_instance_lookup.clear();
                         println!("Subtracted sphere at {}", hit_pos);
                     }
                 }
@@ -964,7 +969,7 @@ fn main() {
         if sdf_dirty {
             sdf_dirty = false;
             let _reused_count = 0u32;
-            octree2 = OctreeNode2::get_node(Vec3::ZERO, ROOT_SIZE, &sdf);
+            octree2 = OctreeNode::get_node(Vec3::ZERO, ROOT_SIZE, &sdf);
             
         }
 

@@ -82,6 +82,104 @@ impl OctreeNode {
 
 }
 
+/// Look up the node containing `point` at the given `target_size`.
+/// Walks from `root` down through the octree, using `child_cache` to
+/// avoid recomputing children, until the node size matches `target_size`.
+pub fn lookup_node(
+    root: &OctreeNode,
+    child_cache: &mut std::collections::HashMap<OctreeNode, [OctreeNode; 8]>,
+    point: Vec3,
+    target_size: f32,
+) -> OctreeNode {
+    let mut current = root.clone();
+
+    loop {
+        match &current {
+            OctreeNode::Empty => return OctreeNode::Empty,
+            OctreeNode::Node { center, size, .. } => {
+                if *size <= target_size {
+                    return current;
+                }
+
+                let children = child_cache
+                    .entry(current.clone())
+                    .or_insert_with(|| current.get_child_nodes());
+
+                // Determine which octant the point falls in
+                let octant = ((point.x >= center.x) as usize)
+                    | (((point.y >= center.y) as usize) << 1)
+                    | (((point.z >= center.z) as usize) << 2);
+
+                current = children[octant].clone();
+            }
+        }
+    }
+}
+
+/// Recursively remove a node and all its cached descendants from the cache.
+fn invalidate_cache(
+    node: &OctreeNode,
+    cache: &mut std::collections::HashMap<OctreeNode, [OctreeNode; 8]>,
+) {
+    if let Some(children) = cache.remove(node) {
+        for child in &children {
+            invalidate_cache(child, cache);
+        }
+    }
+}
+
+/// Edit a node's SDF at a specific point and size, modifying only the cache.
+/// Walks from `root` down to `target_size`, applies `edit_fn` to the node's SDF,
+/// rebuilds that node, updates the parent's cached children, and invalidates
+/// all descendant cache entries below the edited node.
+pub fn edit_node(
+    root: &OctreeNode,
+    child_cache: &mut std::collections::HashMap<OctreeNode, [OctreeNode; 8]>,
+    point: Vec3,
+    target_size: f32,
+    edit_fn: impl FnOnce(Rc<Sdf>) -> Rc<Sdf>,
+) {
+    // Walk down, recording (parent_node, octant_index) at each level
+    let mut path: Vec<(OctreeNode, usize)> = Vec::new();
+    let mut current = root.clone();
+
+    loop {
+        match &current {
+            OctreeNode::Empty => return,
+            OctreeNode::Node { center, size, sdf } => {
+                if *size <= target_size {
+                    // Found the target node — apply the edit
+                    let new_sdf = edit_fn(sdf.clone());
+                    let new_node = OctreeNode::get_node(*center, *size, &new_sdf);
+
+                    // Invalidate all cached descendants of the old node
+                    invalidate_cache(&current, child_cache);
+
+                    // Update the parent's cached children to point to the new node
+                    if let Some((parent, octant)) = path.last() {
+                        if let Some(children) = child_cache.get_mut(parent) {
+                            children[*octant] = new_node;
+                        }
+                    }
+                    return;
+                }
+
+                let children = child_cache
+                    .entry(current.clone())
+                    .or_insert_with(|| current.get_child_nodes());
+
+                let octant = ((point.x >= center.x) as usize)
+                    | (((point.y >= center.y) as usize) << 1)
+                    | (((point.z >= center.z) as usize) << 2);
+
+                let next = children[octant].clone();
+                path.push((current, octant));
+                current = next;
+            }
+        }
+    }
+}
+
 /// Ray-AABB intersection. Returns (t_enter, t_exit) or None if miss.
 fn ray_aabb(pos: Vec3, dir: Vec3, center: Vec3, half: f32) -> Option<(f32, f32)> {
     let bmin = center - Vec3::new(half, half, half);
