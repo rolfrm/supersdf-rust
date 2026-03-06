@@ -152,6 +152,250 @@ void main()
       discard;
   }"#;
 
+// ---------- SDF SVO shaders ----------
+
+const SDF_VERTEX_SHADER_SRC: &str = r#"
+#version 330 core
+
+layout (location = 0) in vec3 aPos;
+
+uniform mat4 uViewProj;
+uniform vec3 uChunkPos;
+uniform float uChunkSize;
+
+out vec3 vLocalPos;
+out vec3 vWorldPos;
+
+void main()
+{
+    vLocalPos = aPos;
+    vec3 worldPos = uChunkPos + aPos * uChunkSize;
+    vWorldPos = worldPos;
+    gl_Position = uViewProj * vec4(worldPos, 1.0);
+}
+"#;
+
+const SDF_FRAGMENT_SHADER_SRC: &str = r#"
+#version 330 core
+
+in vec3 vLocalPos;
+in vec3 vWorldPos;
+
+uniform usamplerBuffer uSvoBuffer;
+uniform vec3 uCameraPos;
+uniform vec3 uChunkPos;
+uniform float uChunkSize;
+uniform int uMaxLevel;
+
+out vec4 FragColor;
+
+// Read SVO node at index
+void readNode(int idx, out uint childMask, out uint childOffset, out float dist, out vec3 color) {
+    uint w0 = texelFetch(uSvoBuffer, idx * 3).r;
+    uint w1 = texelFetch(uSvoBuffer, idx * 3 + 1).r;
+    uint w2 = texelFetch(uSvoBuffer, idx * 3 + 2).r;
+    childMask = w0 >> 24u;
+    childOffset = w0 & 0xFFFFFFu;
+    dist = uintBitsToFloat(w1);
+    color = vec3(
+        float(w2 & 0xFFu) / 255.0,
+        float((w2 >> 8u) & 0xFFu) / 255.0,
+        float((w2 >> 16u) & 0xFFu) / 255.0
+    );
+}
+
+// Determine which octant a point falls in relative to a center
+int getOctant(vec3 p, vec3 center) {
+    int oct = 0;
+    if (p.x > center.x) oct |= 1;
+    if (p.y > center.y) oct |= 2;
+    if (p.z > center.z) oct |= 4;
+    return oct;
+}
+
+// Get child center offset
+vec3 octantOffset(int oct, float h) {
+    return vec3(
+        (oct & 1) != 0 ? h : -h,
+        (oct & 2) != 0 ? h : -h,
+        (oct & 4) != 0 ? h : -h
+    );
+}
+
+// Count set bits below bit position 'bit' in mask
+int childIndex(uint mask, int bit) {
+    int count = 0;
+    for (int i = 0; i < bit; i++) {
+        if ((mask & (1u << uint(i))) != 0u) count++;
+    }
+    return count;
+}
+
+// Walk SVO and return the distance at the leaf containing point p (in [0,1]^3 space)
+float svoDistance(vec3 p) {
+    int nodeIdx = 0;
+    vec3 nodeCenter = vec3(0.5);
+    float nodeSize = 1.0;
+    float dist = 0.0;
+
+    for (int level = 0; level <= uMaxLevel; level++) {
+        uint childMask, childOffset;
+        float nodeDist;
+        vec3 nodeColor;
+        readNode(nodeIdx, childMask, childOffset, nodeDist, nodeColor);
+        dist = nodeDist;
+
+        if (childMask == 0u || level == uMaxLevel)
+            return dist;
+
+        int oct = getOctant(p, nodeCenter);
+        if ((childMask & (1u << uint(oct))) == 0u)
+            return dist; // pruned = outside
+
+        int ci = childIndex(childMask, oct);
+        nodeIdx = int(childOffset) + ci;
+        float childHalf = nodeSize * 0.25;
+        nodeCenter += octantOffset(oct, childHalf);
+        nodeSize *= 0.5;
+    }
+    return dist;
+}
+
+// Look up SVO color at a point
+vec3 svoColor(vec3 p) {
+    int nodeIdx = 0;
+    vec3 nodeCenter = vec3(0.5);
+    float nodeSize = 1.0;
+    vec3 color = vec3(0.5);
+
+    for (int level = 0; level <= uMaxLevel; level++) {
+        uint childMask, childOffset;
+        float nodeDist;
+        vec3 nodeColor;
+        readNode(nodeIdx, childMask, childOffset, nodeDist, nodeColor);
+        color = nodeColor;
+
+        if (childMask == 0u || level == uMaxLevel)
+            return color;
+
+        int oct = getOctant(p, nodeCenter);
+        if ((childMask & (1u << uint(oct))) == 0u)
+            return color;
+
+        int ci = childIndex(childMask, oct);
+        nodeIdx = int(childOffset) + ci;
+        float childHalf = nodeSize * 0.25;
+        nodeCenter += octantOffset(oct, childHalf);
+        nodeSize *= 0.5;
+    }
+    return color;
+}
+
+// Trilinearly interpolated SVO distance for smooth surfaces
+float svoDistanceSmooth(vec3 p) {
+    float R = float(1 << uMaxLevel);
+    vec3 g = p * R - 0.5;
+    vec3 g0 = floor(g);
+    vec3 f = fract(g);
+
+    // Sample 8 nearest leaf centers
+    float d000 = svoDistance(clamp((g0 + vec3(0,0,0) + 0.5) / R, vec3(0.0), vec3(0.999)));
+    float d100 = svoDistance(clamp((g0 + vec3(1,0,0) + 0.5) / R, vec3(0.0), vec3(0.999)));
+    float d010 = svoDistance(clamp((g0 + vec3(0,1,0) + 0.5) / R, vec3(0.0), vec3(0.999)));
+    float d110 = svoDistance(clamp((g0 + vec3(1,1,0) + 0.5) / R, vec3(0.0), vec3(0.999)));
+    float d001 = svoDistance(clamp((g0 + vec3(0,0,1) + 0.5) / R, vec3(0.0), vec3(0.999)));
+    float d101 = svoDistance(clamp((g0 + vec3(1,0,1) + 0.5) / R, vec3(0.0), vec3(0.999)));
+    float d011 = svoDistance(clamp((g0 + vec3(0,1,1) + 0.5) / R, vec3(0.0), vec3(0.999)));
+    float d111 = svoDistance(clamp((g0 + vec3(1,1,1) + 0.5) / R, vec3(0.0), vec3(0.999)));
+
+    // Trilinear interpolation
+    return mix(
+        mix(mix(d000, d100, f.x), mix(d010, d110, f.x), f.y),
+        mix(mix(d001, d101, f.x), mix(d011, d111, f.x), f.y),
+        f.z
+    );
+}
+
+// Sphere-trace through the SVO
+void main()
+{
+    vec3 rayDir = normalize(vWorldPos - uCameraPos);
+    vec3 entryPos = clamp(vLocalPos, vec3(0.001), vec3(0.999));
+
+    float t = 0.0;
+    float invChunkSize = 1.0 / uChunkSize;
+    float leafSize = uChunkSize / float(1 << uMaxLevel);
+    float hitEps = leafSize * 0.1;
+
+    // Adaptive stepping: skip empty space fast, small steps near surface
+    float halfLeaf = leafSize * 0.5;
+    float prevDist = svoDistance(entryPos);
+    float prevT = 0.0;
+
+    // If ray enters already inside geometry, render surface at entry point
+    if (prevDist <= 0.0) {
+        float eps = leafSize * invChunkSize;
+        vec3 normal = normalize(vec3(
+            svoDistance(entryPos + vec3(eps, 0.0, 0.0)) - svoDistance(entryPos - vec3(eps, 0.0, 0.0)),
+            svoDistance(entryPos + vec3(0.0, eps, 0.0)) - svoDistance(entryPos - vec3(0.0, eps, 0.0)),
+            svoDistance(entryPos + vec3(0.0, 0.0, eps)) - svoDistance(entryPos - vec3(0.0, 0.0, eps))
+        ));
+        vec3 baseColor = svoColor(entryPos);
+        vec3 lightDir = normalize(vec3(0.4, 0.8, 0.3));
+        float ambient = 0.25;
+        float diffuse = max(dot(normal, lightDir), 0.0);
+        FragColor = vec4(baseColor * (ambient + diffuse * 0.75), 1.0);
+        return;
+    }
+
+    for (int step = 0; step < 64; step++) {
+        // Adaptive step: use distance to skip empty space, but always step at least halfLeaf
+        t += max(abs(prevDist) - halfLeaf, halfLeaf);
+        vec3 p = entryPos + rayDir * t * invChunkSize;
+
+        if (any(lessThan(p, vec3(-0.01))) || any(greaterThan(p, vec3(1.01))))
+            break;
+        p = clamp(p, vec3(0.0), vec3(0.999));
+
+        float dist = svoDistance(p);
+
+        // Sign change: crossed the surface (outside -> inside)
+        if (prevDist > 0.0 && dist <= 0.0) {
+            // Binary search to find exact crossing
+            float tLo = prevT;
+            float tHi = t;
+            for (int r = 0; r < 5; r++) {
+                float tMid = (tLo + tHi) * 0.5;
+                vec3 pm = clamp(entryPos + rayDir * tMid * invChunkSize, vec3(0.0), vec3(0.999));
+                if (svoDistance(pm) > 0.0) tLo = tMid;
+                else                     tHi = tMid;
+            }
+
+            vec3 hitP = clamp(entryPos + rayDir * ((tLo + tHi) * 0.5) * invChunkSize, vec3(0.001), vec3(0.998));
+
+            float eps = leafSize * invChunkSize;
+            vec3 normal = normalize(vec3(
+                svoDistance(hitP + vec3(eps, 0.0, 0.0)) - svoDistance(hitP - vec3(eps, 0.0, 0.0)),
+                svoDistance(hitP + vec3(0.0, eps, 0.0)) - svoDistance(hitP - vec3(0.0, eps, 0.0)),
+                svoDistance(hitP + vec3(0.0, 0.0, eps)) - svoDistance(hitP - vec3(0.0, 0.0, eps))
+            ));
+
+            vec3 baseColor = svoColor(hitP);
+            vec3 lightDir = normalize(vec3(0.4, 0.8, 0.3));
+            float ambient = 0.25;
+            float diffuse = max(dot(normal, lightDir), 0.0);
+            FragColor = vec4(baseColor * (ambient + diffuse * 0.75), 1.0);
+            return;
+        }
+
+        prevT = t;
+        prevDist = dist;
+    }
+
+    discard;
+}
+"#;
+
 // ---------- GL helpers ----------
 
 fn compile_gl_shader(src: &str, shader_type: GLenum) -> GLuint {
@@ -247,12 +491,12 @@ fn build_initial_scene0() -> Sdf {
     let poles = 2;
 
     {
-        let pole = Sdf::aabb(Vec3::new(0.0, -1010.0, 0.0), Vec3::new(10000.0, 1000.0, 10000.0));
+        let pole = Sdf::aabb(Vec3::new(0.0, -1010.0, 0.0), Vec3::new(100.0, 100.0, 100.0));
         let wood = pole.with_coloring(build_grass());
         items.push(Rc::new(wood));
     }
 
-    for i in -10..10{
+    for i in -3..3{
         let pole = Sdf::sphere(Vec3::new(100.0, -10.0, i as f32 * 100.0), 50.0);
         let wood = pole.with_coloring(build_stone());
         items.push(Rc::new(wood));
@@ -388,6 +632,212 @@ impl Palette {
         self.colors.push(rgb);
         self.lookup.insert(rgb, idx);
         idx
+    }
+}
+
+/// SDF SVO rendering: stores a sparse voxel octree of SDF distances per chunk.
+struct SdfSuperChunk {
+    svo_buf_tex: GLuint,   // GL_TEXTURE_BUFFER bound to svo_buf (R32UI)
+    svo_buf: GLuint,       // GL buffer for SVO node data
+    node_count: u32,       // number of nodes in the SVO
+    max_level: i32,        // number of subdivision levels
+    center: Vec3,          // world-space center of this chunk
+    size: f32,             // world-space size of this chunk
+}
+
+fn pack_color_u32(color: Color) -> u32 {
+    let r = (color.r.clamp(0.0, 1.0) * 255.0) as u32;
+    let g = (color.g.clamp(0.0, 1.0) * 255.0) as u32;
+    let b = (color.b.clamp(0.0, 1.0) * 255.0) as u32;
+    r | (g << 8) | (b << 16)
+}
+
+/// Build a sparse voxel octree encoding SDF distances.
+/// Returns the flat node buffer (3 u32s per node) and the number of levels used.
+fn build_svo(center: Vec3, size: f32, sdf: &Sdf, max_level: i32) -> Vec<u32> {
+    let mut nodes: Vec<u32> = Vec::new();
+    build_svo_recursive(center, size, sdf, 0, max_level, &mut nodes);
+    if nodes.is_empty() {
+        // Push a single empty root node
+        nodes.push(0); // word0: no children
+        let far_dist = size * 10.0 / size; // normalized, far away
+        nodes.push(far_dist.to_bits());
+        nodes.push(0); // no color
+    }
+    nodes
+}
+
+/// Recursively build SVO nodes. Returns true if this node is non-empty.
+fn build_svo_recursive(
+    center: Vec3,
+    size: f32,
+    sdf: &Sdf,
+    level: i32,
+    max_level: i32,
+    nodes: &mut Vec<u32>,
+) -> bool {
+    let d = sdf.distance(center);
+    let half_diag = size * 0.866; // sqrt(3)/2
+
+    // Prune: if fully outside or fully inside (no surface crosses this node)
+    if d.abs() > half_diag {
+        return false;
+    }
+
+    let my_index = nodes.len() / 3;
+
+    // Evaluate color near surface
+    let color = if d.abs() < size {
+        sdf.color(center)
+    } else {
+        Color::rgb(0.5, 0.5, 0.5)
+    };
+
+    // Push placeholder node (word0 will be patched if we have children)
+    nodes.push(0); // word0: placeholder
+    nodes.push(d.to_bits()); // word1: raw SDF distance (world units)
+    nodes.push(pack_color_u32(color)); // word2: color
+
+    if level >= max_level {
+        // Leaf node: word0 stays 0 (no children)
+        return true;
+    }
+
+    // Try to subdivide into 8 children
+    let child_size = size / 2.0;
+    let child_half = child_size / 2.0;
+
+    // Build each child subtree into a temp buffer
+    let mut child_buffers: Vec<(usize, Vec<u32>)> = Vec::new();
+    let mut child_mask: u8 = 0;
+
+    for oct in 0..8usize {
+        let offset = octree2::octant_offset(oct, child_half);
+        let child_center = center + offset;
+        let mut child_nodes: Vec<u32> = Vec::new();
+        let exists = build_svo_recursive(child_center, child_size, sdf, level + 1, max_level, &mut child_nodes);
+        if exists {
+            child_mask |= 1 << oct;
+            child_buffers.push((oct, child_nodes));
+        }
+    }
+
+    if child_mask == 0 {
+        return true;
+    }
+
+    // Layout: child root nodes must be contiguous so the shader can index them.
+    // 1. Reserve contiguous slots for child root nodes
+    // 2. Append each child's subtree (everything after root) to the end
+    // 3. Fix up all internal child_offset pointers
+
+    let num_children = child_buffers.len();
+    let children_base = nodes.len() / 3;
+
+    // Step 1: Reserve slots for child root nodes
+    for _ in 0..num_children {
+        nodes.push(0);
+        nodes.push(0);
+        nodes.push(0);
+    }
+
+    // Step 2: Copy root nodes into reserved slots, append subtrees, fix up offsets
+    for (ci, (_oct, child_buf)) in child_buffers.iter().enumerate() {
+        let root_slot = children_base + ci;
+
+        // Copy root node data
+        nodes[root_slot * 3] = child_buf[0];
+        nodes[root_slot * 3 + 1] = child_buf[1];
+        nodes[root_slot * 3 + 2] = child_buf[2];
+
+        // If child has its own subtree (more than just root)
+        if child_buf.len() > 3 {
+            let subtree_start = nodes.len() / 3;
+
+            // Append subtree nodes (indices 1+ from child buffer)
+            for i in (3..child_buf.len()).step_by(3) {
+                let mut w0 = child_buf[i];
+                let cm = w0 >> 24;
+                if cm != 0 {
+                    // Fix up: offset was relative to child buffer start
+                    // In child buffer, this node's children are at index X
+                    // In main buffer, child buffer index 0 = root_slot, index 1+ starts at subtree_start
+                    // So child buffer index X maps to subtree_start + (X - 1)
+                    let old_co = w0 & 0xFFFFFF;
+                    let new_co = subtree_start as u32 + old_co - 1;
+                    w0 = (cm << 24) | (new_co & 0xFFFFFF);
+                }
+                nodes.push(w0);
+                nodes.push(child_buf[i + 1]);
+                nodes.push(child_buf[i + 2]);
+            }
+
+            // Fix up root node's child_offset too
+            let root_cm = child_buf[0] >> 24;
+            if root_cm != 0 {
+                let old_co = child_buf[0] & 0xFFFFFF;
+                let new_co = subtree_start as u32 + old_co - 1;
+                nodes[root_slot * 3] = (root_cm << 24) | (new_co & 0xFFFFFF);
+            }
+        }
+    }
+
+    // Patch this node's word0 with child_mask and children_base
+    nodes[my_index * 3] = ((child_mask as u32) << 24) | (children_base as u32 & 0xFFFFFF);
+
+    true
+}
+
+fn create_sdf_superchunk(
+    node: &octree2::OctreeNode,
+    _cache: &mut ChildNodeCache,
+    _min_size: f32,
+) -> Option<SdfSuperChunk> {
+    match node {
+        octree2::OctreeNode::Empty => None,
+        octree2::OctreeNode::Node { center, size, sdf } => {
+            // Calculate number of levels: log2(size / min_leaf_size)
+            // For size=64, leaf=1 -> 6 levels
+            let num_levels = (*size as f64).log2().round() as i32 ;
+            let num_levels = num_levels.max(1).min(12); // clamp to reasonable range
+
+            // Build the SVO
+            let svo_data = build_svo(*center, *size, sdf, num_levels);
+            let node_count = (svo_data.len() / 3) as u32;
+
+            if node_count == 0 {
+                return None;
+            }
+
+            // Upload to GL buffer texture
+            let mut svo_buf: GLuint = 0;
+            let mut svo_buf_tex: GLuint = 0;
+            unsafe {
+                gl::GenBuffers(1, &mut svo_buf);
+                gl::BindBuffer(gl::TEXTURE_BUFFER, svo_buf);
+                gl::BufferData(
+                    gl::TEXTURE_BUFFER,
+                    (svo_data.len() * std::mem::size_of::<u32>()) as GLsizeiptr,
+                    svo_data.as_ptr() as *const _,
+                    gl::STATIC_DRAW,
+                );
+
+                gl::GenTextures(1, &mut svo_buf_tex);
+                gl::BindTexture(gl::TEXTURE_BUFFER, svo_buf_tex);
+                gl::TexBuffer(gl::TEXTURE_BUFFER, gl::R32UI, svo_buf);
+            }
+
+            println!("SDF SVO: center={} size={} levels={} nodes={}", center, size, num_levels, node_count);
+
+            Some(SdfSuperChunk {
+                svo_buf_tex,
+                svo_buf,
+                node_count,
+                max_level: num_levels,
+                center: *center,
+                size: *size,
+            })
+        }
     }
 }
 
@@ -813,6 +1263,25 @@ fn main() {
         )
     };
 
+    // SDF SVO shader program
+    let sdf_prog = {
+        let vs = compile_gl_shader(SDF_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
+        let fs = compile_gl_shader(SDF_FRAGMENT_SHADER_SRC, gl::FRAGMENT_SHADER);
+        let id = link_program(vs, fs);
+        println!("SDF shader program: id={} vs={} fs={}", id, vs, fs);
+        let locs = (
+            id,
+            unsafe { gl::GetUniformLocation(id, CString::new("uViewProj").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uSvoBuffer").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uCameraPos").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uChunkPos").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uChunkSize").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uMaxLevel").unwrap().as_ptr()) },
+        );
+        println!("SDF uniform locs: vp={} svo={} cam={} pos={} size={} level={}", locs.1, locs.2, locs.3, locs.4, locs.5, locs.6);
+        locs
+    };
+
     // Cursor shader + geometry (3-axis crosshair made of 6 lines)
     let cursor_prog = {
         let vs = compile_gl_shader(CURSOR_VERTEX_SHADER_SRC, gl::VERTEX_SHADER);
@@ -844,6 +1313,10 @@ fn main() {
         vao
     };
     let mut cursor_hit: Option<Vec3> = None;
+
+    // SDF SVO rendering state
+    let mut sdf_render_mode = false;
+    let mut sdf_chunk_lookup: HashMap<octree2::OctreeNode, SdfSuperChunk> = HashMap::new();
 
     // Camera state
     let mut cam_pos = Vec3::new(0.0, 0.0, -60.0);
@@ -899,7 +1372,12 @@ fn main() {
                         }
                         Key::B if pressed => {
                             node_instance_lookup.clear();
+                            sdf_chunk_lookup.clear();
                             child_cache.clear();
+                        }
+                        Key::T if pressed => {
+                            sdf_render_mode = !sdf_render_mode;
+                            println!("Render mode: {}", if sdf_render_mode { "SDF sphere-trace" } else { "Voxel DDA" });
                         }
                         _ => {}
                     }
@@ -972,7 +1450,7 @@ fn main() {
             sdf_dirty = false;
             let _reused_count = 0u32;
             octree2 = OctreeNode::get_node(Vec3::ZERO, ROOT_SIZE, &sdf);
-            
+            sdf_chunk_lookup.clear();
         }
 
         // Camera direction from yaw/pitch
@@ -1041,30 +1519,49 @@ fn main() {
 
                             let lod = calculate_lod(dist, 3.0 * 2000.0, 10) + 1;
                             if size <= 64.0 * (lod as f32) {
-                                if node_instance_lookup.contains_key(&node) {
-                                    to_render.push(node);
-                                    continue;
-                                }
+                                if sdf_render_mode {
+                                    // SDF mode: use sdf_chunk_lookup
+                                    if sdf_chunk_lookup.contains_key(&node) {
+                                        to_render.push(node);
+                                        continue;
+                                    }
+                                    if chunks_generated < MAX_CHUNKS_PER_FRAME {
+                                        let copy = node.clone();
+                                        if let Some(sc) = create_sdf_superchunk(&node, &mut child_cache, (lod * 4) as f32) {
+                                            sdf_chunk_lookup.insert(copy.clone(), sc);
+                                            to_render.push(copy);
+                                        }
+                                        chunks_generated += 1;
+                                        continue;
+                                    }
+                                } else {
+                                    // Voxel mode: use node_instance_lookup
+                                    if node_instance_lookup.contains_key(&node) {
+                                        to_render.push(node);
+                                        continue;
+                                    }
 
-                                if chunks_generated < MAX_CHUNKS_PER_FRAME {
+                                    if chunks_generated < MAX_CHUNKS_PER_FRAME {
+                                        let copy = node.clone();
+                                        let chunk = get_superchunk(node, center, size, &mut palette, vbo, (lod * 4) as f32, &mut child_cache);
+                                        node_instance_lookup.insert(copy.clone(), chunk);
+                                        to_render.push(copy);
+                                        chunks_generated += 1;
+                                        continue;
+                                    }
+
+                                    // Budget exhausted — try coarser LOD
+                                    let coarse_lod = (lod + 1).max(2);
+                                    let coarse_min = (coarse_lod * 4) as f32;
                                     let copy = node.clone();
-                                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, (lod * 4) as f32, &mut child_cache);
+                                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, coarse_min, &mut child_cache);
                                     node_instance_lookup.insert(copy.clone(), chunk);
                                     to_render.push(copy);
-                                    chunks_generated += 1;
                                     continue;
                                 }
-                                
-                                // Budget exhausted — try coarser LOD
-                                let coarse_lod = (lod + 1).max(2);
-                                let coarse_min = (coarse_lod * 4) as f32;
-                                let copy = node.clone();
-                                let chunk = get_superchunk(node, center, size, &mut palette, vbo, coarse_min, &mut child_cache);
-                                node_instance_lookup.insert(copy.clone(), chunk);
-                                to_render.push(copy);
                                 continue;
                             }
-                            
+
                             let children = child_cache.get_and_track(&node);
                             // Recurse into children front-to-back
                             let near = ((cam_pos.x > center.x) as usize)
@@ -1084,58 +1581,84 @@ fn main() {
                 }
             }
 
-            //println!("Rendering: {}", to_render.len());
-            // Voxel rendering with LOD: per-frame octree traversal
-            if !to_render.is_empty() {
+            if sdf_render_mode {
+                // ---- SDF SVO rendering path ----
+                if !to_render.is_empty() {
+                    gl::UseProgram(sdf_prog.0);
+                    gl::UniformMatrix4fv(sdf_prog.1, 1, gl::FALSE, vp.as_ptr());
+                    gl::Uniform1i(sdf_prog.2, 0); // SVO buffer on texture unit 0
+                    gl::Uniform3f(sdf_prog.3, cam_pos.x, cam_pos.y, cam_pos.z);
 
-                if palette_colors != palette.colors.len() {
-                    palette_colors = palette.colors.len();
-                    println!("update palette! {}", palette_colors);
+                    gl::BindVertexArray(vao);
+
+                    for node in to_render.iter() {
+                        if let Some(sc) = sdf_chunk_lookup.get(node) {
+                            let half = sc.size / 2.0;
+                            gl::Uniform3f(sdf_prog.4, sc.center.x - half, sc.center.y - half, sc.center.z - half);
+                            gl::Uniform1f(sdf_prog.5, sc.size);
+                            gl::Uniform1i(sdf_prog.6, sc.max_level);
+
+                            gl::ActiveTexture(gl::TEXTURE0);
+                            gl::BindTexture(gl::TEXTURE_BUFFER, sc.svo_buf_tex);
+
+                            gl::DrawArrays(gl::TRIANGLES, 0, 36);
+                        }
+                    }
+                    gl::BindVertexArray(0);
+                }
+            } else {
+                // ---- Voxel DDA rendering path ----
+                if !to_render.is_empty() {
+
+                    if palette_colors != palette.colors.len() {
+                        palette_colors = palette.colors.len();
+                        println!("update palette! {}", palette_colors);
+                        gl::BindTexture(gl::TEXTURE_1D, palette_tex);
+                        // Pad palette to 256 entries
+                        let mut palette_data = [[0u8; 3]; 256];
+                        for (i, c) in palette.colors.iter().enumerate() {
+                            palette_data[i] = *c;
+                        }
+                        gl::TexImage1D(
+                            gl::TEXTURE_1D, 0, gl::RGB8 as i32,
+                            256, 0, gl::RGB, gl::UNSIGNED_BYTE,
+                            palette_data.as_ptr() as *const _,
+                            );
+                        gl::TexParameteri(gl::TEXTURE_1D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+                        gl::TexParameteri(gl::TEXTURE_1D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+                    }
+
+
+                    // Upload instance data and draw
+                    gl::UseProgram(voxel_prog.0);
+                    gl::UniformMatrix4fv(voxel_prog.1, 1, gl::FALSE, vp.as_ptr());
+                    gl::Uniform1i(voxel_prog.2, 0);  // brick atlas on texture unit 0
+                    gl::Uniform1i(voxel_prog.4, 1);  // palette on texture unit 1
+                    gl::Uniform1i(voxel_prog.5, 2);  // normal atlas on texture unit 2
+                    gl::Uniform3f(voxel_prog.3, cam_pos.x, cam_pos.y, cam_pos.z);
+
+                    // Bind palette texture to unit 1
+                    gl::ActiveTexture(gl::TEXTURE1);
                     gl::BindTexture(gl::TEXTURE_1D, palette_tex);
-                    // Pad palette to 256 entries
-                    let mut palette_data = [[0u8; 3]; 256];
-                    for (i, c) in palette.colors.iter().enumerate() {
-                        palette_data[i] = *c;
+                    gl::ActiveTexture(gl::TEXTURE0);
+
+                    for (_i, node) in to_render.iter().enumerate() {
+                        if let Some(sc) = node_instance_lookup.get(&node) {
+
+                            gl::BindBuffer(gl::ARRAY_BUFFER, sc.instance_vbo);
+                            // Brick atlas on unit 0
+                            gl::ActiveTexture(gl::TEXTURE0);
+                            gl::BindTexture(gl::TEXTURE_2D_ARRAY, sc.tex);
+                            // Normal atlas on unit 2
+                            gl::ActiveTexture(gl::TEXTURE2);
+                            gl::BindTexture(gl::TEXTURE_2D_ARRAY, sc.normal_tex);
+                            gl::BindVertexArray(sc.vao);
+                            gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, sc.instances as GLsizei);
+                        }
                     }
-                    gl::TexImage1D(
-                        gl::TEXTURE_1D, 0, gl::RGB8 as i32,
-                        256, 0, gl::RGB, gl::UNSIGNED_BYTE,
-                        palette_data.as_ptr() as *const _,
-                        );
-                    gl::TexParameteri(gl::TEXTURE_1D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
-                    gl::TexParameteri(gl::TEXTURE_1D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+                    gl::ActiveTexture(gl::TEXTURE0);
+                    gl::BindVertexArray(0);
                 }
-
-                
-                // Upload instance data and draw
-                gl::UseProgram(voxel_prog.0);
-                gl::UniformMatrix4fv(voxel_prog.1, 1, gl::FALSE, vp.as_ptr());
-                gl::Uniform1i(voxel_prog.2, 0);  // brick atlas on texture unit 0
-                gl::Uniform1i(voxel_prog.4, 1);  // palette on texture unit 1
-                gl::Uniform1i(voxel_prog.5, 2);  // normal atlas on texture unit 2
-                gl::Uniform3f(voxel_prog.3, cam_pos.x, cam_pos.y, cam_pos.z);
-
-                // Bind palette texture to unit 1
-                gl::ActiveTexture(gl::TEXTURE1);
-                gl::BindTexture(gl::TEXTURE_1D, palette_tex);
-                gl::ActiveTexture(gl::TEXTURE0);
-
-                for (_i, node) in to_render.iter().enumerate() {
-                    if let Some(sc) = node_instance_lookup.get(&node) {
-
-                        gl::BindBuffer(gl::ARRAY_BUFFER, sc.instance_vbo);
-                        // Brick atlas on unit 0
-                        gl::ActiveTexture(gl::TEXTURE0);
-                        gl::BindTexture(gl::TEXTURE_2D_ARRAY, sc.tex);
-                        // Normal atlas on unit 2
-                        gl::ActiveTexture(gl::TEXTURE2);
-                        gl::BindTexture(gl::TEXTURE_2D_ARRAY, sc.normal_tex);
-                        gl::BindVertexArray(sc.vao);
-                        gl::DrawArraysInstanced(gl::TRIANGLES, 0, 36, sc.instances as GLsizei);
-                    }
-                }
-                gl::ActiveTexture(gl::TEXTURE0);
-                gl::BindVertexArray(0);
             }
 
             // Draw 3D cursor crosshair at hit point
