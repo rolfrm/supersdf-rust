@@ -99,6 +99,8 @@ impl Vec3 {
     pub fn with_y(&self, v : f32) -> Vec3 {Vec3::new(self.x, v, self.z) }
     pub fn with_x(&self, v : f32) -> Vec3 {Vec3::new(v, self.y, self.z) }
 
+    pub fn sign(&self) -> Vec3 { Vec3::new(self.x.signum(), self.y.signum(), self.y.signum())}
+
 }
 
 impl<'a> Sum<&'a Vec3> for Vec3 {

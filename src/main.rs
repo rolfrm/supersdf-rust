@@ -353,7 +353,7 @@ pub struct VoxelInstanceData {
     pub chunk_size: f32,       // 4.0 for LOD 0, 8.0 for LOD 1, etc.
 }
 
-const ROOT_SIZE : f32= 32000.0;
+const ROOT_SIZE : f32= 1024.0 * 32.0;
 const FIELD_SIZE: i32 = 16000;
 
 /// Palette: maps u8 index (1-255) to RGB color. Index 0 = air/empty.
@@ -796,7 +796,7 @@ fn main() {
     let mut octree2 = build_octree(&sdf, ROOT_SIZE);
     let mut palette_colors =0;
     
-    let mut node_instance_lookup = HashMap::new();
+    let mut node_instance_lookup = HashMap::new(); 
     let mut child_cache = ChildNodeCache::new();
 
     let voxel_prog = {
@@ -1000,7 +1000,7 @@ fn main() {
 
         let (w, h) = window.get_framebuffer_size();
         let aspect = w as f32 / h as f32;
-
+        let far = 16000.0;
         // Build VP matrix: FOV matches old shader's focal length of 1.0
         let fovy = 2.0 * (0.5f32).atan();
         let view = mat4::view(cam_pos, dir, up);
@@ -1027,20 +1027,24 @@ fn main() {
                 let frustum = Frustum::from_vp(&vp);
                 let mut to_render = vec![];
                 let mut chunks_generated = 0u32;
-                child_cache.generation += 1;
+            child_cache.generation += 1;
+            let mut lods : [i32;32] =[0;32];
+            if let OctreeNode::Node{size, ..} = octree2 {
+                //println!("stack: {}", (size / 64.0).log2());
+            }
                 {
-                    let mut oct_stack: Vec<octree2::OctreeNode> = vec![octree2.clone()];
-                    while let Some(node) = oct_stack.pop() {
+                    let mut oct_stack: Vec<(octree2::OctreeNode, i32)> = vec![(octree2.clone(), 0)];
+                    while let Some((node, maxlod)) = oct_stack.pop() {
                     match node {
                         octree2::OctreeNode::Empty => {}
 
                         octree2::OctreeNode::Node { center, size, ..} => {
                             if frustum.cull_aabb(center, size / 2.0) { continue; }
-
                             let dist = (center - cam_pos).length();
-
-                            let lod = calculate_lod(dist, 3.0 * 2000.0, 10) + 1;
-                            if size <= 64.0 * (lod as f32) {
+                            
+                            let lod = maxlod;
+                            if  size <= 64.0 * (lod as f32) {
+                                lods[lod as usize] = lods[lod as usize] + 1;
                                 if node_instance_lookup.contains_key(&node) {
                                     to_render.push(node);
                                     continue;
@@ -1056,12 +1060,15 @@ fn main() {
                                 }
                                 
                                 // Budget exhausted — try coarser LOD
-                                let coarse_lod = (lod + 1).max(2);
-                                let coarse_min = (coarse_lod * 4) as f32;
-                                let copy = node.clone();
-                                let chunk = get_superchunk(node, center, size, &mut palette, vbo, coarse_min, &mut child_cache);
-                                node_instance_lookup.insert(copy.clone(), chunk);
-                                to_render.push(copy);
+                                if false {
+                                    let coarse_lod = (lod + 1).max(2);
+                                    let coarse_min = (coarse_lod * 4) as f32;
+                                    let copy = node.clone();
+                                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, coarse_min, &mut child_cache);
+                                    node_instance_lookup.insert(copy.clone(), chunk);
+                                    to_render.push(copy);
+                                    
+                                }
                                 continue;
                             }
                             
@@ -1070,11 +1077,27 @@ fn main() {
                             let near = ((cam_pos.x > center.x) as usize)
                                 | (((cam_pos.y > center.y) as usize) << 1)
                                 | (((cam_pos.z > center.z) as usize) << 2);
+
+                            let mut min_lod : i32 = 100;
+                            for &mask in &[7usize, 6, 5, 3, 4, 2, 1, 0] {
+                                let child = &children[near ^ mask];
+                                match child {
+                                    octree2::OctreeNode::Node {center, ..} => {
+                                        let lod = (calculate_lod((*center - cam_pos).length(), far, 15) + 1) as i32;
+                                        if lod < min_lod {
+                                            min_lod = lod;
+                                        }
+                                    }
+                                    octree2::OctreeNode::Empty => {}
+                                }
+
+                            }
+                            
                             for &mask in &[7usize, 6, 5, 3, 4, 2, 1, 0] {
                                 let child = &children[near ^ mask];
                                 match child {
                                     octree2::OctreeNode::Node {..} => {
-                                        oct_stack.push(child.clone());
+                                        oct_stack.push((child.clone(), min_lod));
                                     }
                                     octree2::OctreeNode::Empty => {}
                                 }
@@ -1084,7 +1107,7 @@ fn main() {
                 }
             }
 
-            //println!("Rendering: {}", to_render.len());
+            println!("Rendering: {}   {:?}", to_render.len(), lods);
             // Voxel rendering with LOD: per-frame octree traversal
             if !to_render.is_empty() {
 
