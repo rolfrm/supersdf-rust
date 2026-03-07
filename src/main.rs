@@ -1093,16 +1093,14 @@ fn main() {
             gl::BindVertexArray(vao);
             let fake_pos = cam_pos;//Vec3::new(40.0, 0.0, 30.0);
             
-                const MAX_CHUNKS_PER_FRAME: u32 = 10;
+                const MAX_CHUNKS_PER_FRAME: u32 = 1;
                 let frustum = Frustum::from_vp(&vp);
-                let mut to_render: Vec<(octree2::OctreeNode, i32)> = vec![];
-                let mut chunks_generated = 0u32;
                 let mut occluded_count = 0u32;
             child_cache.generation += 1;
             let mut lods : [i32;32] =[0;32];
-            if let OctreeNode::Node{size, ..} = octree2 {
-                //println!("stack: {}", (size / 64.0).log2());
-            }
+
+            // Pass 1: Traverse octree, collect candidate leaf nodes (no chunk generation)
+            let mut candidates: Vec<(octree2::OctreeNode, i32, Vec3, f32)> = vec![];
                 {
                     let mut oct_stack: Vec<(octree2::OctreeNode, i32)> = vec![(octree2.clone(), 0)];
                     while let Some((node, maxlod)) = oct_stack.pop() {
@@ -1111,38 +1109,11 @@ fn main() {
 
                         octree2::OctreeNode::Node { center, size, ref sdf, ..} => {
                             if frustum.cull_aabb(center, size / 2.0) { continue; }
-                            let dist = (center - fake_pos).length();
 
                             let lod = maxlod;
                             if  size <= 64.0 * (lod as f32) {
-                                //if dist > 400.0 {
-                                //    continue;
-                                //}
                                 lods[lod as usize] = lods[lod as usize] + 1;
-                                if node_instance_lookup.contains_key(&node) {
-                                    to_render.push((node, lod));
-                                    continue;
-                                }
-
-                                if chunks_generated < MAX_CHUNKS_PER_FRAME {
-                                    let copy = node.clone();
-                                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, (lod * 4) as f32, &mut child_cache);
-                                    node_instance_lookup.insert(copy.clone(), chunk);
-                                    to_render.push((copy, lod));
-                                    chunks_generated += 1;
-                                    continue;
-                                }
-
-                                // Budget exhausted — try coarser LOD
-                                if false {
-                                    let coarse_lod = (lod + 1).max(2);
-                                    let coarse_min = (coarse_lod * 4) as f32;
-                                    let copy = node.clone();
-                                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, coarse_min, &mut child_cache);
-                                    node_instance_lookup.insert(copy.clone(), chunk);
-                                    to_render.push((copy, lod));
-
-                                }
+                                candidates.push((node, lod, center, size));
                                 continue;
                             }
 
@@ -1153,10 +1124,6 @@ fn main() {
                                 | (((cam_pos.z > center.z) as usize) << 2);
 
                             // --- Dividing-plane occlusion culling ---
-                            // For each axis, the dividing plane at center splits children
-                            // into two halves. If the SDF is negative (solid) everywhere
-                            // on that plane, no ray can cross it — children on the far
-                            // side of the camera are fully occluded.
                             let half = size / 2.0;
                             let grid_n = 3usize;
                             let grid_spacing = size / grid_n as f32;
@@ -1209,8 +1176,6 @@ fn main() {
                                 let child = &children[idx];
                                 match child {
                                     octree2::OctreeNode::Node {..} => {
-                                        // Child is behind a solid wall if it's on the
-                                        // opposite side of the camera on any walled axis.
                                         let behind_wall =
                                             (wall_x && (idx & 1) != (near & 1)) ||
                                             (wall_y && (idx & 2) != (near & 2)) ||
@@ -1227,6 +1192,29 @@ fn main() {
                         }
                     }
                 }
+            }
+
+            // Pass 2: Generate missing chunks (up to budget), prioritizing fine LOD first
+            // Sort by distance first, then stable-sort by LOD so within each tier we draw front-to-back
+            candidates.sort_by(|a, b| {
+                let dist_a = (a.2 - fake_pos).length();
+                let dist_b = (b.2 - fake_pos).length();
+                dist_a.partial_cmp(&dist_b).unwrap()
+            });
+            candidates.sort_by_key(|(_node, lod, _center, _size)| *lod);
+            let mut to_render: Vec<(octree2::OctreeNode, i32)> = vec![];
+            let mut chunks_generated = 0u32;
+            for (node, lod, center, size) in candidates {
+                if node_instance_lookup.contains_key(&node) {
+                    to_render.push((node, lod));
+                } else if chunks_generated < MAX_CHUNKS_PER_FRAME {
+                    let copy = node.clone();
+                    let chunk = get_superchunk(node, center, size, &mut palette, vbo, (lod * 4) as f32, &mut child_cache);
+                    node_instance_lookup.insert(copy.clone(), chunk);
+                    to_render.push((copy, lod));
+                    chunks_generated += 1;
+                }
+                // Budget exhausted — node skipped, will appear next frame
             }
 
             //println!("Rendering: {}  occluded: {}  {:?}", to_render.len(), occluded_count, lods);
