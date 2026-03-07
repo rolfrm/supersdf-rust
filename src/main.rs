@@ -37,6 +37,26 @@ void main() {
 }
 "#;
 
+const DEBUG_BOX_VS: &str = r#"
+#version 330 core
+layout (location = 0) in vec3 aPos;
+uniform mat4 uViewProj;
+uniform vec3 uCenter;
+uniform float uHalfSize;
+void main() {
+    gl_Position = uViewProj * vec4(uCenter + aPos * uHalfSize, 1.0);
+}
+"#;
+
+const DEBUG_BOX_FS: &str = r#"
+#version 330 core
+uniform vec3 uColor;
+out vec4 FragColor;
+void main() {
+    FragColor = vec4(uColor, 1.0);
+}
+"#;
+
 const VOXEL_VERTEX_SHADER_SRC: &str = r#"
 #version 330 core
 
@@ -463,8 +483,7 @@ struct SuperChunk {
     normal_tex: GLuint,    // GL_TEXTURE_2D_ARRAY for packed normals (RGB8)
     vao: GLuint,           // VAO with cube geometry + per-instance data
     instance_vbo: GLuint,  // VBO for VoxelInstanceData
-    instances: u32
-
+    instances: u32,
 }
 
 struct ChildNodeCache {
@@ -575,7 +594,7 @@ fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette:
     let mut stack: Vec<octree2::OctreeNode> = vec![node];
     while let Some(n) = stack.pop() {
         match &n {
-            octree2::OctreeNode::Empty => {}
+            octree2::OctreeNode::Empty | octree2::OctreeNode::Solid { .. } => {}
             octree2::OctreeNode::Node { center, size, sdf } => {
                 if *size <= min_size {
                     if let Some(chunk) = voxelize_node(*center, *size, sdf, palette) {
@@ -669,7 +688,7 @@ fn get_superchunk(node: octree2::OctreeNode, _center: Vec3, _size: f32, palette:
         normal_tex,
         vao: sc_vao,
         instance_vbo: sc_instance_vbo,
-        instances: layer.len() as u32
+        instances: layer.len() as u32,
     }
 }
 
@@ -845,6 +864,52 @@ fn main() {
     };
     let mut cursor_hit: Option<Vec3> = None;
 
+    // Debug bounding box shader + wireframe cube
+    let debug_box_prog = {
+        let vs = compile_gl_shader(DEBUG_BOX_VS, gl::VERTEX_SHADER);
+        let fs = compile_gl_shader(DEBUG_BOX_FS, gl::FRAGMENT_SHADER);
+        let id = link_program(vs, fs);
+        (
+            id,
+            unsafe { gl::GetUniformLocation(id, CString::new("uViewProj").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uCenter").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uHalfSize").unwrap().as_ptr()) },
+            unsafe { gl::GetUniformLocation(id, CString::new("uColor").unwrap().as_ptr()) },
+        )
+    };
+    let debug_box_vao = unsafe {
+        // 12 edges of a unit cube from -1 to +1
+        let lines: [f32; 72] = [
+            // bottom face
+            -1.0,-1.0,-1.0,  1.0,-1.0,-1.0,
+             1.0,-1.0,-1.0,  1.0,-1.0, 1.0,
+             1.0,-1.0, 1.0, -1.0,-1.0, 1.0,
+            -1.0,-1.0, 1.0, -1.0,-1.0,-1.0,
+            // top face
+            -1.0, 1.0,-1.0,  1.0, 1.0,-1.0,
+             1.0, 1.0,-1.0,  1.0, 1.0, 1.0,
+             1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
+            -1.0, 1.0, 1.0, -1.0, 1.0,-1.0,
+            // vertical edges
+            -1.0,-1.0,-1.0, -1.0, 1.0,-1.0,
+             1.0,-1.0,-1.0,  1.0, 1.0,-1.0,
+             1.0,-1.0, 1.0,  1.0, 1.0, 1.0,
+            -1.0,-1.0, 1.0, -1.0, 1.0, 1.0,
+        ];
+        let mut vao = 0u32;
+        let mut vbo = 0u32;
+        gl::GenVertexArrays(1, &mut vao);
+        gl::GenBuffers(1, &mut vbo);
+        gl::BindVertexArray(vao);
+        gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+        gl::BufferData(gl::ARRAY_BUFFER, (lines.len() * 4) as isize, lines.as_ptr() as *const _, gl::STATIC_DRAW);
+        gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, 12, ptr::null());
+        gl::EnableVertexAttribArray(0);
+        gl::BindVertexArray(0);
+        vao
+    };
+    let mut show_debug_boxes = false;
+
     // Camera state
     let mut cam_pos = Vec3::new(0.0, 0.0, -60.0);
     let mut yaw: f32 = 0.0;
@@ -900,6 +965,10 @@ fn main() {
                         Key::B if pressed => {
                             node_instance_lookup.clear();
                             child_cache.clear();
+                        }
+                        Key::F1 if pressed => {
+                            show_debug_boxes = !show_debug_boxes;
+                            println!("Debug bounding boxes: {}", if show_debug_boxes { "ON" } else { "OFF" });
                         }
                         _ => {}
                     }
@@ -1025,8 +1094,9 @@ fn main() {
 
                 const MAX_CHUNKS_PER_FRAME: u32 = 1;
                 let frustum = Frustum::from_vp(&vp);
-                let mut to_render = vec![];
+                let mut to_render: Vec<(octree2::OctreeNode, i32)> = vec![];
                 let mut chunks_generated = 0u32;
+                let mut occluded_count = 0u32;
             child_cache.generation += 1;
             let mut lods : [i32;32] =[0;32];
             if let OctreeNode::Node{size, ..} = octree2 {
@@ -1036,17 +1106,17 @@ fn main() {
                     let mut oct_stack: Vec<(octree2::OctreeNode, i32)> = vec![(octree2.clone(), 0)];
                     while let Some((node, maxlod)) = oct_stack.pop() {
                     match node {
-                        octree2::OctreeNode::Empty => {}
+                        octree2::OctreeNode::Empty | octree2::OctreeNode::Solid { .. } => {}
 
-                        octree2::OctreeNode::Node { center, size, ..} => {
+                        octree2::OctreeNode::Node { center, size, ref sdf, ..} => {
                             if frustum.cull_aabb(center, size / 2.0) { continue; }
                             let dist = (center - cam_pos).length();
-                            
+
                             let lod = maxlod;
                             if  size <= 64.0 * (lod as f32) {
                                 lods[lod as usize] = lods[lod as usize] + 1;
                                 if node_instance_lookup.contains_key(&node) {
-                                    to_render.push(node);
+                                    to_render.push((node, lod));
                                     continue;
                                 }
 
@@ -1054,11 +1124,11 @@ fn main() {
                                     let copy = node.clone();
                                     let chunk = get_superchunk(node, center, size, &mut palette, vbo, (lod * 4) as f32, &mut child_cache);
                                     node_instance_lookup.insert(copy.clone(), chunk);
-                                    to_render.push(copy);
+                                    to_render.push((copy, lod));
                                     chunks_generated += 1;
                                     continue;
                                 }
-                                
+
                                 // Budget exhausted — try coarser LOD
                                 if false {
                                     let coarse_lod = (lod + 1).max(2);
@@ -1066,17 +1136,55 @@ fn main() {
                                     let copy = node.clone();
                                     let chunk = get_superchunk(node, center, size, &mut palette, vbo, coarse_min, &mut child_cache);
                                     node_instance_lookup.insert(copy.clone(), chunk);
-                                    to_render.push(copy);
-                                    
+                                    to_render.push((copy, lod));
+
                                 }
                                 continue;
                             }
-                            
+
                             let children = child_cache.get_and_track(&node);
                             // Recurse into children front-to-back
                             let near = ((cam_pos.x > center.x) as usize)
                                 | (((cam_pos.y > center.y) as usize) << 1)
                                 | (((cam_pos.z > center.z) as usize) << 2);
+
+                            // --- Dividing-plane occlusion culling ---
+                            // For each axis, the dividing plane at center splits children
+                            // into two halves. If the SDF is negative (solid) everywhere
+                            // on that plane, no ray can cross it — children on the far
+                            // side of the camera are fully occluded.
+                            let half = size / 2.0;
+                            let grid_n = 3usize;
+                            let grid_spacing = size / grid_n as f32;
+                            let wall_threshold = -grid_spacing * 0.7072;
+                            let check_plane_solid = |fixed_axis: usize| -> bool {
+                                let (base_u, base_v) = match fixed_axis {
+                                    0 => (center.y - half, center.z - half),
+                                    1 => (center.x - half, center.z - half),
+                                    _ => (center.x - half, center.y - half),
+                                };
+                                let fixed_val = match fixed_axis {
+                                    0 => center.x, 1 => center.y, _ => center.z,
+                                };
+                                for iu in 0..grid_n {
+                                    for iv in 0..grid_n {
+                                        let u = base_u + (iu as f32 + 0.5) * grid_spacing;
+                                        let v = base_v + (iv as f32 + 0.5) * grid_spacing;
+                                        let pt = match fixed_axis {
+                                            0 => Vec3::new(fixed_val, u, v),
+                                            1 => Vec3::new(u, fixed_val, v),
+                                            _ => Vec3::new(u, v, fixed_val),
+                                        };
+                                        if sdf.distance(pt) > wall_threshold {
+                                            return false;
+                                        }
+                                    }
+                                }
+                                true
+                            };
+                            let wall_x = check_plane_solid(0);
+                            let wall_y = check_plane_solid(1);
+                            let wall_z = check_plane_solid(2);
 
                             let mut min_lod : i32 = 100;
                             for &mask in &[7usize, 6, 5, 3, 4, 2, 1, 0] {
@@ -1088,18 +1196,28 @@ fn main() {
                                             min_lod = lod;
                                         }
                                     }
-                                    octree2::OctreeNode::Empty => {}
+                                    _ => {}
                                 }
-
                             }
-                            
+
                             for &mask in &[7usize, 6, 5, 3, 4, 2, 1, 0] {
-                                let child = &children[near ^ mask];
+                                let idx = near ^ mask;
+                                let child = &children[idx];
                                 match child {
                                     octree2::OctreeNode::Node {..} => {
+                                        // Child is behind a solid wall if it's on the
+                                        // opposite side of the camera on any walled axis.
+                                        let behind_wall =
+                                            (wall_x && (idx & 1) != (near & 1)) ||
+                                            (wall_y && (idx & 2) != (near & 2)) ||
+                                            (wall_z && (idx & 4) != (near & 4));
+                                        if behind_wall {
+                                            occluded_count += 1;
+                                            continue;
+                                        }
                                         oct_stack.push((child.clone(), min_lod));
                                     }
-                                    octree2::OctreeNode::Empty => {}
+                                    _ => {}
                                 }
                             }
                         }
@@ -1107,7 +1225,7 @@ fn main() {
                 }
             }
 
-            println!("Rendering: {}   {:?}", to_render.len(), lods);
+            println!("Rendering: {}  occluded: {}  {:?}", to_render.len(), occluded_count, lods);
             // Voxel rendering with LOD: per-frame octree traversal
             if !to_render.is_empty() {
 
@@ -1143,9 +1261,8 @@ fn main() {
                 gl::BindTexture(gl::TEXTURE_1D, palette_tex);
                 gl::ActiveTexture(gl::TEXTURE0);
 
-                for (_i, node) in to_render.iter().enumerate() {
+                for (_i, (node, _lod)) in to_render.iter().enumerate() {
                     if let Some(sc) = node_instance_lookup.get(&node) {
-
                         gl::BindBuffer(gl::ARRAY_BUFFER, sc.instance_vbo);
                         // Brick atlas on unit 0
                         gl::ActiveTexture(gl::TEXTURE0);
@@ -1159,6 +1276,41 @@ fn main() {
                 }
                 gl::ActiveTexture(gl::TEXTURE0);
                 gl::BindVertexArray(0);
+            }
+
+            // Debug: draw wireframe bounding boxes around each super chunk
+            if show_debug_boxes && !to_render.is_empty() {
+                // LOD colors: cycle through distinct hues
+                let lod_colors: [[f32; 3]; 8] = [
+                    [0.0, 1.0, 0.0], // LOD 0 - green
+                    [0.0, 1.0, 1.0], // LOD 1 - cyan
+                    [0.0, 0.0, 1.0], // LOD 2 - blue
+                    [1.0, 1.0, 0.0], // LOD 3 - yellow
+                    [1.0, 0.5, 0.0], // LOD 4 - orange
+                    [1.0, 0.0, 0.0], // LOD 5 - red
+                    [1.0, 0.0, 1.0], // LOD 6 - magenta
+                    [1.0, 1.0, 1.0], // LOD 7+ - white
+                ];
+
+                unsafe {
+                    gl::UseProgram(debug_box_prog.0);
+                    gl::UniformMatrix4fv(debug_box_prog.1, 1, gl::FALSE, vp.as_ptr());
+                    gl::BindVertexArray(debug_box_vao);
+                    gl::Disable(gl::DEPTH_TEST);
+
+                    for (node, lod) in to_render.iter() {
+                        if let octree2::OctreeNode::Node { center, size, .. } = node {
+                            let color = &lod_colors[(*lod as usize).min(lod_colors.len() - 1)];
+                            gl::Uniform3f(debug_box_prog.2, center.x, center.y, center.z);
+                            gl::Uniform1f(debug_box_prog.3, size / 2.0);
+                            gl::Uniform3f(debug_box_prog.4, color[0], color[1], color[2]);
+                            gl::DrawArrays(gl::LINES, 0, 24);
+                        }
+                    }
+
+                    gl::Enable(gl::DEPTH_TEST);
+                    gl::BindVertexArray(0);
+                }
             }
 
             // Draw 3D cursor crosshair at hit point

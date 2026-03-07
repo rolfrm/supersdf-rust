@@ -89,4 +89,16 @@ impl Frustum {
         }
         false
     }
+
+    /// Returns true if a box with per-axis half-extents is entirely outside the frustum.
+    pub fn cull_aabb_extents(&self, center: Vec3, hx: f32, hy: f32, hz: f32) -> bool {
+        for p in &self.planes {
+            let r = hx * p[0].abs() + hy * p[1].abs() + hz * p[2].abs();
+            let dist = p[0] * center.x + p[1] * center.y + p[2] * center.z + p[3];
+            if dist + r < 0.0 {
+                return true;
+            }
+        }
+        false
+    }
 }

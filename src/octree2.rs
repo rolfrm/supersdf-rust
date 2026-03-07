@@ -11,6 +11,11 @@ pub enum OctreeNode {
         sdf: Rc<Sdf>,
     },
     Empty,
+    /// Fully inside the geometry — solid block, no visible surface.
+    Solid {
+        center: Vec3,
+        size: f32,
+    },
 }
 
 /// Return the center offset for child octant `i` given `half` = child_size / 2.
@@ -38,6 +43,13 @@ impl OctreeNode {
             }
             OctreeNode::Empty => {
                 std::array::from_fn(|_i| { OctreeNode::Empty})
+            }
+            OctreeNode::Solid { center, size } => {
+                let child_size = size / 2.0;
+                std::array::from_fn(|i| {
+                    let child_center = *center + octant_offset(i, child_size / 2.0);
+                    OctreeNode::Solid { center: child_center, size: child_size }
+                })
             }
         }
     }
@@ -67,9 +79,8 @@ impl OctreeNode {
         }
         
         if optimized.distance(center) < -half_diag {
-            // a fully enclosed voxel.
-            // it may not be fully, fully enclosed, but at least it looks like it.
-            return OctreeNode::Empty;
+            // a fully enclosed voxel — solid interior, no visible surface.
+            return OctreeNode::Solid { center, size };
         }
 
         OctreeNode::Node {
@@ -96,6 +107,7 @@ pub fn lookup_node(
     loop {
         match &current {
             OctreeNode::Empty => return OctreeNode::Empty,
+            OctreeNode::Solid { .. } => return current,
             OctreeNode::Node { center, size, .. } => {
                 if *size <= target_size {
                     return current;
@@ -158,7 +170,7 @@ fn edit_node_recursive(
     parent_and_octant: Option<(&OctreeNode, usize)>,
 ) {
     match node {
-        OctreeNode::Empty => return,
+        OctreeNode::Empty | OctreeNode::Solid { .. } => return,
         OctreeNode::Node { center, size, sdf } => {
             if *size <= target_size {
                 // Target level — apply the edit
@@ -241,7 +253,7 @@ pub fn fast_cast_ray(
     let mut stack: Vec<(OctreeNode, f32)> = Vec::with_capacity(64);
 
     match root {
-        OctreeNode::Empty => return None,
+        OctreeNode::Empty | OctreeNode::Solid { .. } => return None,
         OctreeNode::Node { center, size, .. } => {
             if let Some((t_enter, _)) = ray_aabb(pos, dir, *center, size / 2.0) {
                 stack.push((root.clone(), t_enter.max(0.0)));
@@ -258,7 +270,7 @@ pub fn fast_cast_ray(
         }
 
         match &node {
-            OctreeNode::Empty => {}
+            OctreeNode::Empty | OctreeNode::Solid { .. } => {}
             OctreeNode::Node { center, size, sdf } => {
                 if *size <= min_node_size {
                     // Leaf node: sphere-trace within this AABB
@@ -287,7 +299,7 @@ pub fn fast_cast_ray(
                     // Collect children that the ray hits
                     for child in children.iter() {
                         match child {
-                            OctreeNode::Empty => {}
+                            OctreeNode::Empty | OctreeNode::Solid { .. } => {}
                             OctreeNode::Node { center: cc, size: cs, .. } => {
                                 if let Some((t_en, _)) = ray_aabb(pos, dir, *cc, cs / 2.0) {
                                     let t_en = t_en.max(0.0);
@@ -333,6 +345,13 @@ impl std::hash::Hash for OctreeNode {
             OctreeNode::Empty => {
                 1u8.hash(state);
             }
+            OctreeNode::Solid { center, size } => {
+                2u8.hash(state);
+                center.x.to_bits().hash(state);
+                center.y.to_bits().hash(state);
+                center.z.to_bits().hash(state);
+                size.to_bits().hash(state);
+            }
         }
     }
 }
@@ -348,8 +367,15 @@ impl PartialEq for OctreeNode {
                 && c1.y.to_bits() == c2.y.to_bits()
                 && c1.z.to_bits() == c2.z.to_bits()
                 && s1.to_bits() == s2.to_bits(),
-            
+
             (OctreeNode::Empty, OctreeNode::Empty) => true,
+            (
+                OctreeNode::Solid { center: c1, size: s1 },
+                OctreeNode::Solid { center: c2, size: s2 },
+            ) => c1.x.to_bits() == c2.x.to_bits()
+                && c1.y.to_bits() == c2.y.to_bits()
+                && c1.z.to_bits() == c2.z.to_bits()
+                && s1.to_bits() == s2.to_bits(),
             _ => false,
         }
     }
