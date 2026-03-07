@@ -34,7 +34,7 @@ impl OctreeNode {
         match self {
             OctreeNode::Node {center, size ,sdf} => {
                 let child_size = size / 2.0;
-                let children :[OctreeNode;8]= std::array::from_fn(|i| {
+                let children : [OctreeNode;8] = std::array::from_fn(|i| {
                     let child_center = *center + octant_offset(i, child_size / 2.0);
                     OctreeNode::get_node(child_center, child_size, sdf)
                 });
@@ -73,15 +73,33 @@ impl OctreeNode {
         }
 
         let half_diag = size * 0.5 * 1.7320508;
-        if optimized.distance(center) > half_diag {
-            // a fully outside voxel.
+        let center_distance = optimized.distance(center); 
+        if center_distance > half_diag {
             return OctreeNode::Empty;
         }
-        
-        if optimized.distance(center) < -half_diag {
-            // a fully enclosed voxel — solid interior, no visible surface.
+
+        if center_distance < -half_diag {
             return OctreeNode::Solid { center, size };
         }
+        
+        // Corner check for Solid: sample all 8 corners.
+        // Threshold: voxelizer needs d < -step*0.8, worst-case voxel offset
+        // from corner is 0.5*step*sqrt(3), so corner needs d < -size*0.42.
+        // We use -size*0.40 (slightly less conservative).
+        let h = size * 0.5;
+        let inside_threshold = -size * 0.40;
+        let mut all_inside = true;
+        for i in 0..8usize {
+            let corner = center + octant_offset(i, h);
+            if optimized.distance(corner) > inside_threshold {
+                all_inside = false;
+                break;
+            }
+        }
+        if all_inside {
+            return OctreeNode::Solid { center, size };
+        }
+
 
         OctreeNode::Node {
             center,
@@ -382,3 +400,279 @@ impl PartialEq for OctreeNode {
 }
 
 impl Eq for OctreeNode {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use supersdf::sdf::*;
+
+    /// Place an AABB box on top of a small sphere and verify that octree nodes
+    /// around but not touching the geometry are classified as Empty, not Node.
+    #[test]
+    fn test_no_spurious_nodes_around_box_on_sphere() {
+        // Small sphere at origin + box sitting on top
+        let sphere = Sdf::sphere(Vec3::new(0.0, 0.0, 0.0), 5.0);
+        let boxx = Sdf::aabb(Vec3::new(0.0, 10.0, 0.0), Vec3::new(4.0, 4.0, 4.0));
+        let sdf = Add::new(sphere, boxx).into();
+
+        let root_size = 64.0;
+        let root = build_octree(&sdf, root_size);
+
+        // Walk the octree down to leaf-ish nodes and check for spurious Nodes
+        let mut stack = vec![root];
+        let mut spurious = Vec::new();
+        while let Some(node) = stack.pop() {
+            match &node {
+                OctreeNode::Empty | OctreeNode::Solid { .. } => {}
+                OctreeNode::Node { center, size, sdf: node_sdf } => {
+                    if *size <= 4.0 {
+                        // At leaf size, check if the SDF is actually anywhere
+                        // near this node. If the closest surface is far away,
+                        // this node should have been pruned to Empty.
+                        let half = size / 2.0;
+                        let d = node_sdf.distance(*center);
+                        // If SDF distance at center is more than half-diagonal,
+                        // no surface can intersect this cube — it's spurious.
+                        let half_diag = size * 0.5 * 1.7320508;
+                        if d > half_diag {
+                            spurious.push((*center, *size, d));
+                        }
+                    } else {
+                        let children = node.get_child_nodes();
+                        for child in children {
+                            stack.push(child);
+                        }
+                    }
+                }
+            }
+        }
+        if !spurious.is_empty() {
+            for (center, size, d) in &spurious {
+                println!(
+                    "SPURIOUS Node at center={:?} size={} distance_at_center={}",
+                    center, size, d
+                );
+            }
+            panic!(
+                "Found {} spurious Node(s) that should be Empty",
+                spurious.len()
+            );
+        }
+    }
+
+    /// Check that nodes well inside the ground slab are Solid, not Node.
+    #[test]
+    fn test_ground_interior_is_solid() {
+        let ground = Sdf::aabb(
+            Vec3::new(0.0, -1010.0, 0.0),
+            Vec3::new(10000.0, 1000.0, 10000.0),
+        );
+        let node = OctreeNode::get_node(
+            Vec3::new(0.0, -1010.0, 0.0),
+            64.0,
+            &ground,
+        );
+        assert!(
+            matches!(node, OctreeNode::Solid { .. }),
+            "Node deep inside ground should be Solid, got {:?}",
+            match &node {
+                OctreeNode::Node { center, size, .. } => format!("Node(center={:?}, size={})", center, size),
+                OctreeNode::Empty => "Empty".to_string(),
+                OctreeNode::Solid { .. } => "Solid".to_string(),
+            }
+        );
+    }
+
+    /// Reproduce the real scene: ground slab + spheres on top.
+    /// Walk the octree at super-chunk granularity (size 64 with min_size 4)
+    /// and check which leaf nodes would produce empty voxelizations.
+    #[test]
+    fn test_scene_no_empty_superchunks() {
+        let ground = Sdf::aabb(
+            Vec3::new(0.0, -1010.0, 0.0),
+            Vec3::new(10000.0, 1000.0, 10000.0),
+        );
+        let sphere = Sdf::sphere(Vec3::new(0.0, 0.0, 0.0), 20.0);
+        let sdf: Sdf = Add::new(ground, sphere).into();
+        let sdf = sdf.optimized_for_block(Vec3::ZERO, 2048.0);
+
+        let root = build_octree(&sdf, 2048.0);
+        let min_size = 4.0;
+
+        let mut stack = vec![root];
+        let mut total_leaves = 0u32;
+        let mut no_surface = 0u32;
+        let mut mostly_inside = 0u32;
+        while let Some(node) = stack.pop() {
+            match &node {
+                OctreeNode::Empty | OctreeNode::Solid { .. } => {}
+                OctreeNode::Node { center, size, sdf: node_sdf } => {
+                    if *size <= min_size {
+                        total_leaves += 1;
+                        // Count voxels by type
+                        let step = size / 4.0;
+                        let half = size / 2.0;
+                        let mut inside = 0u32;
+                        let mut surface = 0u32;
+                        let mut outside = 0u32;
+                        for z in 0..4 {
+                            for y in 0..4 {
+                                for x in 0..4 {
+                                    let pt = Vec3::new(
+                                        center.x - half + (x as f32 + 0.5) * step,
+                                        center.y - half + (y as f32 + 0.5) * step,
+                                        center.z - half + (z as f32 + 0.5) * step,
+                                    );
+                                    let d = node_sdf.distance(pt);
+                                    if d < -step * 0.8 {
+                                        inside += 1;
+                                    } else if d < step * 0.8 {
+                                        surface += 1;
+                                    } else {
+                                        outside += 1;
+                                    }
+                                }
+                            }
+                        }
+                        if surface == 0 {
+                            no_surface += 1;
+                            let d_center = node_sdf.distance(*center);
+                            let h = size / 2.0;
+                            print!(
+                                "NO-SURFACE leaf: center=({:.1}, {:.1}, {:.1}) size={} inside={} outside={} d_center={:.3} corners=[",
+                                center.x, center.y, center.z, size, inside, outside, d_center
+                            );
+                            for ci in 0..8usize {
+                                let corner = *center + octant_offset(ci, h);
+                                let d = node_sdf.distance(corner);
+                                print!("{:.3}, ", d);
+                            }
+                            println!("]");
+                        }
+                        if surface > 0 && surface <= 4 && inside > 50 {
+                            mostly_inside += 1;
+                        }
+                    } else {
+                        let children = node.get_child_nodes();
+                        for child in children {
+                            stack.push(child);
+                        }
+                    }
+                }
+            }
+        }
+        println!("Total leaf nodes: {}", total_leaves);
+        println!("Nodes with NO surface voxels (would be empty chunks): {}", no_surface);
+        println!("Nodes mostly inside (>50 inside, <=4 surface): {}", mostly_inside);
+        assert_eq!(
+            no_surface, 0,
+            "Found {} leaf nodes with no surface — should have been pruned to Empty or Solid",
+            no_surface
+        );
+    }
+
+    /// Test wall detection at various octree levels, simulating the
+    /// real traversal from root down to leaf.
+    #[test]
+    fn test_wall_detection_ground() {
+        let ground = Sdf::aabb(
+            Vec3::new(0.0, -1010.0, 0.0),
+            Vec3::new(10000.0, 1000.0, 10000.0),
+        );
+        // Ground surface at y = -10 (top) and y = -2010 (bottom).
+        let test_cases: Vec<(Vec3, f32, &str, bool)> = vec![
+            (Vec3::new(0.0, -64.0, 0.0), 128.0, "Y plane at y=-64 (in ground)", true),
+            (Vec3::new(0.0, 0.0, 0.0), 128.0, "Y plane at y=0 (above surface)", false),
+            (Vec3::new(0.0, -10.0, 0.0), 8.0, "Y plane at y=-10 (at surface)", false),
+            (Vec3::new(0.0, -20.0, 0.0), 8.0, "Y plane at y=-20 (below surface)", true),
+        ];
+
+        for (center, size, desc, expect_solid) in &test_cases {
+            let opt = ground.optimized_for_block(*center, *size);
+            let half = size / 2.0;
+            let grid_n = 3usize;
+            let grid_spacing = size / grid_n as f32;
+            let threshold = -grid_spacing * 0.7072;
+
+            let mut solid = true;
+            for iu in 0..grid_n {
+                for iv in 0..grid_n {
+                    let u = center.x - half + (iu as f32 + 0.5) * grid_spacing;
+                    let v = center.z - half + (iv as f32 + 0.5) * grid_spacing;
+                    let pt = Vec3::new(u, center.y, v);
+                    let d = opt.distance(pt);
+                    if d > threshold {
+                        println!("  {} — sample ({:.1}, {:.1}, {:.1}) d={:.3} > threshold {:.3}",
+                            desc, pt.x, pt.y, pt.z, d, threshold);
+                        solid = false;
+                    }
+                }
+            }
+            println!("{}: solid={} (expected {})", desc, solid, expect_solid);
+            assert_eq!(solid, *expect_solid, "Wall check failed for: {}", desc);
+        }
+    }
+
+    /// Test wall detection using the actual optimized SDFs stored in octree nodes,
+    /// as the traversal code would use them.
+    #[test]
+    fn test_wall_detection_with_octree_sdf() {
+        let ground = Sdf::aabb(
+            Vec3::new(0.0, -1010.0, 0.0),
+            Vec3::new(10000.0, 1000.0, 10000.0),
+        );
+        let sphere = Sdf::sphere(Vec3::new(0.0, 0.0, 0.0), 20.0);
+        let sdf: Sdf = Add::new(ground, sphere).into();
+        let sdf = sdf.optimized_for_block(Vec3::ZERO, 2048.0);
+
+        let root = build_octree(&sdf, 2048.0);
+
+        // Walk the octree; at each Node check if the Y-wall detection using
+        // the node's stored (optimized) SDF matches the real SDF.
+        let mut stack = vec![root];
+        let mut wall_found = 0u32;
+        let mut wall_missed = 0u32;
+        while let Some(node) = stack.pop() {
+            match &node {
+                OctreeNode::Empty | OctreeNode::Solid { .. } => {}
+                OctreeNode::Node { center, size, sdf: node_sdf } => {
+                    if *size <= 4.0 { continue; }
+
+                    let half = size / 2.0;
+                    let grid_n = 3usize;
+                    let grid_spacing = size / grid_n as f32;
+                    let threshold = -grid_spacing * 0.7072;
+
+                    let mut y_solid = true;
+                    for iu in 0..grid_n {
+                        for iv in 0..grid_n {
+                            let u = center.x - half + (iu as f32 + 0.5) * grid_spacing;
+                            let v = center.z - half + (iv as f32 + 0.5) * grid_spacing;
+                            let pt = Vec3::new(u, center.y, v);
+                            let d = node_sdf.distance(pt);
+                            if d > threshold {
+                                y_solid = false;
+                                let real_d = sdf.distance(pt);
+                                if real_d < threshold {
+                                    println!(
+                                        "MISMATCH at ({:.0},{:.0},{:.0}) size={}: node_sdf={:.2} real={:.2} thresh={:.2}",
+                                        center.x, center.y, center.z, size, d, real_d, threshold
+                                    );
+                                    wall_missed += 1;
+                                }
+                            }
+                        }
+                    }
+                    if y_solid { wall_found += 1; }
+
+                    let children = node.get_child_nodes();
+                    for child in children {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+        println!("Y-walls found: {}, Mismatches (node_sdf wrong): {}", wall_found, wall_missed);
+        assert_eq!(wall_missed, 0, "Node's optimized SDF disagrees with real SDF on {} planes", wall_missed);
+    }
+}

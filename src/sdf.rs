@@ -266,6 +266,17 @@ impl Aabb {
         return vec3_max(q, Vec3::zeros()).length()
             + f32::min(f32::max(q.x, f32::max(q.y, q.z)), 0.0);
     }
+
+    pub fn overlaps_aabb(&self, box_center: Vec3, box_half: f32) -> bool {
+        let bmin = box_center - Vec3::new(box_half, box_half, box_half);
+        let bmax = box_center + Vec3::new(box_half, box_half, box_half);
+        let min = self.center - self.radius;
+        let max = self.center + self.radius;
+        min.x <= bmax.x && max.x >= bmin.x
+            && min.y <= bmax.y && max.y >= bmin.y
+            && min.z <= bmax.z && max.z >= bmin.z
+    }
+    
 }
 
 impl From<Aabb> for Sdf {
@@ -788,13 +799,33 @@ impl Sdf {
                     None => None,
                 }
             }
+            Sdf::Primitive(p) =>{
+                match p {
+                    Primitive::Sphere(s) => {
+                        if !s.overlaps_aabb(block_center, half) {
+                            return Some(Sdf::Empty);
+                        }else{
+
+                            return None;
+                        }
+                    },
+                    Primitive::Aabb(aabb) => {
+                        if !aabb.overlaps_aabb(block_center, half) {
+                            return Some(Sdf::Empty);
+                        }else{
+                        
+                            return None;
+                        }
+                    }
+                }
+            }
 
             _ =>{
                 let sb = self.calculate_sphere_bounds();
                 if !sb.overlaps_aabb(block_center, half) {
-                    return Some(Sdf::Empty);
+                    return Some(Sdf::Empty)
                 }
-                None
+                return None
             }
         }
     }

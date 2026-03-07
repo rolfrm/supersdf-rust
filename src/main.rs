@@ -273,7 +273,7 @@ fn build_initial_scene0() -> Sdf {
     }
 
     for i in -10..10{
-        let pole = Sdf::sphere(Vec3::new(100.0, -10.0, i as f32 * 100.0), 50.0);
+        let pole = Sdf::sphere(Vec3::new(100.0, -10.0, i as f32 * 100.0), 100.0);
         let wood = pole.with_coloring(build_stone());
         items.push(Rc::new(wood));
     }
@@ -1091,8 +1091,9 @@ fn main() {
             gl::Enable(gl::CULL_FACE);
 
             gl::BindVertexArray(vao);
-
-                const MAX_CHUNKS_PER_FRAME: u32 = 1;
+            let fake_pos = cam_pos;//Vec3::new(40.0, 0.0, 30.0);
+            
+                const MAX_CHUNKS_PER_FRAME: u32 = 10;
                 let frustum = Frustum::from_vp(&vp);
                 let mut to_render: Vec<(octree2::OctreeNode, i32)> = vec![];
                 let mut chunks_generated = 0u32;
@@ -1110,10 +1111,13 @@ fn main() {
 
                         octree2::OctreeNode::Node { center, size, ref sdf, ..} => {
                             if frustum.cull_aabb(center, size / 2.0) { continue; }
-                            let dist = (center - cam_pos).length();
+                            let dist = (center - fake_pos).length();
 
                             let lod = maxlod;
                             if  size <= 64.0 * (lod as f32) {
+                                //if dist > 400.0 {
+                                //    continue;
+                                //}
                                 lods[lod as usize] = lods[lod as usize] + 1;
                                 if node_instance_lookup.contains_key(&node) {
                                     to_render.push((node, lod));
@@ -1191,7 +1195,7 @@ fn main() {
                                 let child = &children[near ^ mask];
                                 match child {
                                     octree2::OctreeNode::Node {center, ..} => {
-                                        let lod = (calculate_lod((*center - cam_pos).length(), far, 15) + 1) as i32;
+                                        let lod = (calculate_lod((*center - fake_pos).length(), far, 15) + 1) as i32;
                                         if lod < min_lod {
                                             min_lod = lod;
                                         }
@@ -1225,7 +1229,7 @@ fn main() {
                 }
             }
 
-            println!("Rendering: {}  occluded: {}  {:?}", to_render.len(), occluded_count, lods);
+            //println!("Rendering: {}  occluded: {}  {:?}", to_render.len(), occluded_count, lods);
             // Voxel rendering with LOD: per-frame octree traversal
             if !to_render.is_empty() {
 
@@ -1296,10 +1300,13 @@ fn main() {
                     gl::UseProgram(debug_box_prog.0);
                     gl::UniformMatrix4fv(debug_box_prog.1, 1, gl::FALSE, vp.as_ptr());
                     gl::BindVertexArray(debug_box_vao);
-                    gl::Disable(gl::DEPTH_TEST);
-
+                    //gl::Disable(gl::DEPTH_TEST);
                     for (node, lod) in to_render.iter() {
                         if let octree2::OctreeNode::Node { center, size, .. } = node {
+
+                            if (*center - cam_pos).length() < 40.0 {
+                                continue;
+                            }
                             let color = &lod_colors[(*lod as usize).min(lod_colors.len() - 1)];
                             gl::Uniform3f(debug_box_prog.2, center.x, center.y, center.z);
                             gl::Uniform1f(debug_box_prog.3, size / 2.0);
@@ -1307,9 +1314,8 @@ fn main() {
                             gl::DrawArrays(gl::LINES, 0, 24);
                         }
                     }
-
-                    gl::Enable(gl::DEPTH_TEST);
                     gl::BindVertexArray(0);
+                    //gl::Enable(gl::DEPTH_TEST);
                 }
             }
 
